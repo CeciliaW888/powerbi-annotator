@@ -76,17 +76,18 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 
 ```
 powerbi-annotator/
-├── manifest.json              # Extension config
+├── assets/icons/              # Extension icons
 ├── src/
-│   ├── content/
-│   │   ├── content.js        # Main logic
-│   │   └── content.css       # Styles
 │   ├── background/
-│   │   └── background.js     # Background worker
+│   │   └── background.js      # Background worker
+│   ├── content/
+│   │   ├── content.css        # Styles
+│   │   └── content.js         # Main logic
 │   └── lib/
-│       ├── pptxgen.bundle.js # PptxGenJS library for .pptx export
-│       └── jspdf.umd.min.js  # jsPDF library for .pdf export
-└── assets/icons/             # Extension icons
+│       ├── jspdf.umd.min.js   # jsPDF library for .pdf export
+│       └── pptxgen.bundle.js  # PptxGenJS library for .pptx export
+├── manifest.json              # Extension config
+└── README.md                  # Documentation
 ```
 
 ---
