@@ -909,9 +909,6 @@ async function generatePresentation(format) {
 
   sidebar.style.display = 'none';
   toggleBtn.style.display = 'none';
-  toggleBtn.style.visibility = 'hidden';
-  toggleBtn.style.opacity = '0';
-  toggleBtn.style.zIndex = '-9999';
 
   // Make sure all annotations are visible
   document.querySelectorAll('.pbi-annotation-box').forEach(box => {
@@ -924,9 +921,6 @@ async function generatePresentation(format) {
   if (!reportCanvas) {
     sidebar.style.display = '';
     toggleBtn.style.display = '';
-    toggleBtn.style.visibility = '';
-    toggleBtn.style.opacity = '';
-    toggleBtn.style.zIndex = '';
     if (sidebarWasOpen) sidebar.classList.add('open');
     await showModal('Could not find Power BI report canvas. Make sure you are on a report page.');
     return;
@@ -946,9 +940,6 @@ async function generatePresentation(format) {
     console.error('Extension communication error:', error);
     sidebar.style.display = '';
     toggleBtn.style.display = '';
-    toggleBtn.style.visibility = '';
-    toggleBtn.style.opacity = '';
-    toggleBtn.style.zIndex = '';
     if (sidebarWasOpen) sidebar.classList.add('open');
     await showModal('Unable to communicate with extension background. Try refreshing the page.');
     return;
@@ -962,9 +953,6 @@ async function generatePresentation(format) {
       // User cancelled - restore sidebar and abort
       sidebar.style.display = '';
       toggleBtn.style.display = '';
-      toggleBtn.style.visibility = '';
-      toggleBtn.style.opacity = '';
-      toggleBtn.style.zIndex = '';
       if (sidebarWasOpen) sidebar.classList.add('open');
       return;
     }
@@ -981,9 +969,6 @@ async function generatePresentation(format) {
   // Restore sidebar
   sidebar.style.display = '';
   toggleBtn.style.display = '';
-  toggleBtn.style.visibility = '';
-  toggleBtn.style.opacity = '';
-  toggleBtn.style.zIndex = '';
   if (sidebarWasOpen) {
     sidebar.classList.add('open');
   }
@@ -1054,33 +1039,50 @@ async function generatePptx(screenshot, comments, pageName) {
   if (screenshot) {
     const img = new Image();
     img.src = screenshot;
-    await new Promise(resolve => { img.onload = resolve; });
-
-    const imgAspect = img.naturalWidth / img.naturalHeight;
-    const boxAspect = screenshotW / contentH;
-
-    let imgW, imgH;
-    if (imgAspect > boxAspect) {
-      // Image is wider than box — fit to width
-      imgW = screenshotW;
-      imgH = screenshotW / imgAspect;
-    } else {
-      // Image is taller than box — fit to height
-      imgH = contentH;
-      imgW = contentH * imgAspect;
-    }
-
-    // Center the image vertically within the available area
-    const imgX = margin;
-    const imgY = contentY + (contentH - imgH) / 2;
-
-    slide.addImage({
-      data: screenshot,
-      x: imgX,
-      y: imgY,
-      w: imgW,
-      h: imgH,
+    const imgLoaded = await new Promise(resolve => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
     });
+
+    if (imgLoaded) {
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const boxAspect = screenshotW / contentH;
+
+      let imgW, imgH;
+      if (imgAspect > boxAspect) {
+        // Image is wider than box — fit to width
+        imgW = screenshotW;
+        imgH = screenshotW / imgAspect;
+      } else {
+        // Image is taller than box — fit to height
+        imgH = contentH;
+        imgW = contentH * imgAspect;
+      }
+
+      // Center the image vertically within the available area
+      const imgX = margin;
+      const imgY = contentY + (contentH - imgH) / 2;
+
+      slide.addImage({
+        data: screenshot,
+        x: imgX,
+        y: imgY,
+        w: imgW,
+        h: imgH,
+      });
+    } else {
+      slide.addText('Screenshot capture failed', {
+        x: margin,
+        y: contentY,
+        w: screenshotW,
+        h: contentH,
+        align: 'center',
+        valign: 'middle',
+        fontSize: 14,
+        color: '999999',
+        fontFace: 'Arial',
+      });
+    }
   } else {
     slide.addText('Screenshot capture failed', {
       x: margin,
@@ -1234,27 +1236,36 @@ async function generatePdf(screenshot, comments, pageName) {
   if (screenshot) {
     const img = new Image();
     img.src = screenshot;
-    await new Promise(resolve => { img.onload = resolve; });
+    const imgLoaded = await new Promise(resolve => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+    });
 
-    const imgAspect = img.naturalWidth / img.naturalHeight;
-    const boxAspect = screenshotW / contentH;
+    if (imgLoaded) {
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const boxAspect = screenshotW / contentH;
 
-    let imgW, imgH;
-    if (imgAspect > boxAspect) {
-      // Image is wider - fit to width
-      imgW = screenshotW;
-      imgH = screenshotW / imgAspect;
+      let imgW, imgH;
+      if (imgAspect > boxAspect) {
+        // Image is wider - fit to width
+        imgW = screenshotW;
+        imgH = screenshotW / imgAspect;
+      } else {
+        // Image is taller - fit to height
+        imgH = contentH;
+        imgW = contentH * imgAspect;
+      }
+
+      // Center vertically
+      const imgX = margin;
+      const imgY = contentY + (contentH - imgH) / 2;
+
+      doc.addImage(screenshot, 'PNG', imgX, imgY, imgW, imgH);
     } else {
-      // Image is taller - fit to height
-      imgH = contentH;
-      imgW = contentH * imgAspect;
+      doc.setFontSize(12);
+      doc.setTextColor(153, 153, 153);
+      doc.text('Screenshot capture failed', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
     }
-
-    // Center vertically
-    const imgX = margin;
-    const imgY = contentY + (contentH - imgH) / 2;
-
-    doc.addImage(screenshot, 'PNG', imgX, imgY, imgW, imgH);
   } else {
     // Placeholder for failed screenshot
     doc.setFontSize(12);
@@ -1321,7 +1332,6 @@ async function generatePdf(screenshot, comments, pageName) {
   await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nThe PDF file has been downloaded automatically.`);
 }
 
-// Get readable page name from URL
 // Get the Power BI report canvas element
 function getReportCanvas() {
   // Try multiple selectors to find the report canvas
@@ -1341,25 +1351,7 @@ function getReportCanvas() {
       return element;
     }
   }
-  
-  // Fallback: look for the largest content area (excluding navigation)
-  const allDivs = Array.from(document.querySelectorAll('div'));
-  const contentDivs = allDivs.filter(div => {
-    const rect = div.getBoundingClientRect();
-    return rect.width > 800 && rect.height > 400;
-  });
-  
-  if (contentDivs.length > 0) {
-    // Return the one with the largest area
-    return contentDivs.reduce((largest, current) => {
-      const largestRect = largest.getBoundingClientRect();
-      const currentRect = current.getBoundingClientRect();
-      const largestArea = largestRect.width * largestRect.height;
-      const currentArea = currentRect.width * currentRect.height;
-      return currentArea > largestArea ? current : largest;
-    });
-  }
-  
+
   return null;
 }
 
@@ -1380,15 +1372,17 @@ async function cropScreenshotToCanvas(screenshotDataUrl, canvasElement) {
       // Set canvas size to the cropped area
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
-      
-      // Calculate source coordinates (screenshot may be at different scale)
-      const scaleX = img.width / (window.innerWidth * dpr);
-      const scaleY = img.height / (window.innerHeight * dpr);
-      
-      const sourceX = rect.left * dpr * scaleX;
-      const sourceY = rect.top * dpr * scaleY;
-      const sourceWidth = rect.width * dpr * scaleX;
-      const sourceHeight = rect.height * dpr * scaleY;
+
+      // Calculate source coordinates using the actual image-to-viewport ratio
+      // captureVisibleTab returns an image sized to viewport * dpr, so we map
+      // viewport coordinates directly to image pixels.
+      const scaleX = img.width / window.innerWidth;
+      const scaleY = img.height / window.innerHeight;
+
+      const sourceX = rect.left * scaleX;
+      const sourceY = rect.top * scaleY;
+      const sourceWidth = rect.width * scaleX;
+      const sourceHeight = rect.height * scaleY;
       
       // Draw the cropped portion
       ctx.drawImage(
