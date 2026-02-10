@@ -1,0 +1,48 @@
+# Chrome Extension - Git Ignore
+
+# Development
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Build artifacts (if you add a build process later)
+dist/
+build/
+*.zip
+
+# Dependencies (if you add npm later)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Personal notes
+notes.md
+TODO.md
+LESSONS.md
+
+# Development/debug files
+CLAUDE.md
+test-page.html
+*.pdf
+.claude/
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Desktop.ini
+$RECYCLE.BIN/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Power BI Annotator",
+  "version": "1.0.0",
+  "description": "Add annotations and comments to Power BI reports with a sidebar. Features: 5 drawing tools, color picker, Excel export, PDF/PPT export.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://app.powerbi.com/*",
+    "https://*.powerbi.com/*",
+    "file:///*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.powerbi.com/*",
+        "https://*.powerbi.com/*",
+        "file:///*"
+      ],
+      "js": ["src/lib/pptxgen.bundle.js", "src/content/content.js"],
+      "css": ["src/content/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Toggle Power BI Annotator"
+  },
+  "background": {
+    "service_worker": "src/background/background.js"
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  }
+}
