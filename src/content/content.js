@@ -180,19 +180,28 @@ let screenshotResolver = null;
 
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "toggleSidebar") {
-    toggleSidebar();
-  } else if (message.action === "hideForCapture") {
-    // Hide the instruction modal before the screenshot is taken
-    const modal = document.querySelector('.pbi-modal-overlay');
-    if (modal) modal.style.display = 'none';
-  } else if (message.action === "screenshotResult") {
-    // Background captured the screenshot after the user clicked the extension icon
-    if (screenshotResolver) {
-      screenshotResolver(message);
-      screenshotResolver = null;
+  try {
+    if (message.action === "toggleSidebar") {
+      toggleSidebar();
+      sendResponse({ success: true });
+    } else if (message.action === "hideForCapture") {
+      // Hide the instruction modal before the screenshot is taken
+      const modal = document.querySelector('.pbi-modal-overlay');
+      if (modal) modal.style.display = 'none';
+      sendResponse({ success: true });
+    } else if (message.action === "screenshotResult") {
+      // Background captured the screenshot after the user clicked the extension icon
+      if (screenshotResolver) {
+        screenshotResolver(message);
+        screenshotResolver = null;
+      }
+      sendResponse({ success: true });
     }
+  } catch (error) {
+    console.error('Error handling message:', error);
+    sendResponse({ success: false, error: error.message });
   }
+  return true; // Keep the message channel open for async response
 });
 
 // Create the sidebar UI
@@ -877,7 +886,15 @@ function waitForScreenshotOrCancel() {
     overlay.querySelector('.pbi-modal-btn-cancel').addEventListener('click', () => {
       screenshotResolver = null;
       overlay.remove();
-      chrome.runtime.sendMessage({ action: 'cancelCapture' });
+      try {
+        chrome.runtime.sendMessage({ action: 'cancelCapture' }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('Could not cancel capture:', chrome.runtime.lastError.message);
+          }
+        });
+      } catch (error) {
+        console.log('Extension context error:', error);
+      }
       resolve(null);
     });
   });
@@ -899,11 +916,34 @@ async function generatePresentation(format) {
     box.style.zIndex = '';
   });
 
+  // Get the Power BI report canvas area
+  const reportCanvas = getReportCanvas();
+  if (!reportCanvas) {
+    sidebar.style.display = '';
+    toggleBtn.style.display = '';
+    if (sidebarWasOpen) sidebar.classList.add('open');
+    await showModal('Could not find Power BI report canvas. Make sure you are on a report page.');
+    return;
+  }
+
   // Wait for rendering
   await new Promise(resolve => setTimeout(resolve, 300));
 
   // Tell background to wait for an icon click to capture the screenshot
-  chrome.runtime.sendMessage({ action: 'prepareCapture' });
+  try {
+    chrome.runtime.sendMessage({ action: 'prepareCapture' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('Could not prepare capture:', chrome.runtime.lastError.message);
+      }
+    });
+  } catch (error) {
+    console.error('Extension communication error:', error);
+    sidebar.style.display = '';
+    toggleBtn.style.display = '';
+    if (sidebarWasOpen) sidebar.classList.add('open');
+    await showModal('Unable to communicate with extension background. Try refreshing the page.');
+    return;
+  }
 
   // Show modal asking user to click the extension icon, wait for result or cancel
   let screenshot = null;
@@ -917,7 +957,8 @@ async function generatePresentation(format) {
       return;
     }
     if (result.screenshot) {
-      screenshot = result.screenshot;
+      // Crop screenshot to only the report canvas area
+      screenshot = await cropScreenshotToCanvas(result.screenshot, reportCanvas);
     } else if (result.error) {
       console.error('Screenshot capture error:', result.error);
     }
@@ -949,251 +990,13 @@ async function generatePresentation(format) {
     return;
   }
 
-  // PDF format: generate HTML presentation (existing behavior)
-  const escapedPageName = escapeHtml(pageName);
-  const formatLabel = escapeHtml(format.toUpperCase());
-
-  // Generate HTML presentation
-  let htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${escapedPageName} - Annotations</title>
-  <style>
-    @page {
-      size: A4 landscape;
-      margin: 15mm;
-    }
-    @media print {
-      .slide {
-        page-break-after: always;
-        page-break-inside: avoid;
-      }
-      .print-button {
-        display: none !important;
-      }
-      body {
-        margin: 0;
-        padding: 0;
-      }
-    }
-    body {
-      margin: 20px;
-      padding: 0;
-      font-family: Arial, sans-serif;
-    }
-    .slide {
-      width: calc(100vw - 40px);
-      min-height: calc(100vh - 40px);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: flex-start;
-      padding: 40px;
-      box-sizing: border-box;
-      background: white;
-    }
-    .slide-header {
-      width: 100%;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    .slide-title {
-      font-size: 24px;
-      font-weight: bold;
-      color: #0078d4;
-    }
-    .slide-number {
-      font-size: 18px;
-      color: #666;
-    }
-    .annotation-preview {
-      max-width: 80%;
-      max-height: 60%;
-      border: 3px solid #0078d4;
-      border-radius: 8px;
-      padding: 20px;
-      background: #f5f5f5;
-      margin: 20px 0;
-    }
-    .comments-section {
-      max-width: 80%;
-      width: 100%;
-      margin-top: 40px;
-    }
-    .comments-section h2 {
-      color: #0078d4;
-      margin-bottom: 20px;
-      font-size: 24px;
-    }
-    .comment-box {
-      background: white;
-      padding: 20px;
-      border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      margin-bottom: 15px;
-    }
-    .comment-label {
-      font-size: 14px;
-      color: #666;
-      margin-bottom: 10px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-    .comment-text {
-      font-size: 18px;
-      line-height: 1.6;
-      color: #333;
-    }
-    .comment-header-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 15px;
-      padding-bottom: 10px;
-      border-bottom: 2px solid #e0e0e0;
-    }
-    .comment-number-badge {
-      background: #0078d4;
-      color: white;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 20px;
-      font-weight: bold;
-    }
-    .comment-meta {
-      display: flex;
-      gap: 15px;
-      font-size: 14px;
-      color: #666;
-    }
-    .comment-tool {
-      padding: 4px 12px;
-      background: #f0f0f0;
-      border-radius: 4px;
-    }
-    .screenshot-container {
-      width: 80%;
-      max-width: 1000px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 20px 0;
-    }
-    .screenshot-placeholder {
-      text-align: center;
-      padding: 40px;
-      background: #fff3cd;
-      border-radius: 8px;
-    }
-    .placeholder-icon {
-      font-size: 64px;
-      margin-bottom: 20px;
-    }
-    .screenshot-image {
-      max-width: 100%;
-      max-height: 600px;
-      border-radius: 4px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      border: 1px solid #ddd;
-    }
-    .print-button {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      padding: 15px 30px;
-      background: #0078d4;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      font-size: 16px;
-      cursor: pointer;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-      z-index: 1000;
-    }
-    .print-button:hover {
-      background: #005a9e;
-    }
-    @media print {
-      .print-button {
-        display: none !important;
-      }
-    }
-  </style>
-</head>
-<body>
-  <button class="print-button" onclick="window.print()">\ud83d\udda8\ufe0f Print to ${formatLabel}</button>
-
-  <div class="slide">
-    <div class="slide-header">
-      <div class="slide-title">${escapedPageName}</div>
-      <div class="slide-number">${comments.length} Annotation${comments.length > 1 ? 's' : ''}</div>
-    </div>
-
-    <div class="screenshot-container">
-      ${screenshot ?
-        `<img src="${screenshot}" class="screenshot-image" alt="Power BI Page with Annotations">` :
-        `<div class="screenshot-placeholder">
-          <div class="placeholder-icon">\u26a0\ufe0f</div>
-          <p>Screenshot capture failed</p>
-        </div>`
-      }
-    </div>
-
-    <div class="comments-section">
-      <h2>Comments</h2>
-      ${comments.map(comment => `
-        <div class="comment-box">
-          <div class="comment-header-row">
-            <div class="comment-number-badge">#${comment.number}</div>
-            <div class="comment-meta">
-              <span class="comment-tool">${escapeHtml(comment.tool)}</span>
-              <span class="comment-date">${escapeHtml(comment.date)}</span>
-            </div>
-          </div>
-          <div class="comment-text">${escapeHtml(comment.comment)}</div>
-        </div>
-      `).join('')}
-    </div>
-  </div>
-`;
-
-  htmlContent += `
-</body>
-</html>
-`;
-
-  // Create blob and download as HTML (which can be printed to PDF)
-  const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8;' });
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-
-  const now = new Date();
-  const filename = `PowerBI_Pages_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.html`;
-
-  link.setAttribute('href', url);
-  link.setAttribute('download', filename);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url); // [Fix #10] Prevent memory leak
-
-  // Show success message
-  await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nNext steps:\n1. Open the downloaded HTML file in your browser\n2. Click "Print to PDF" button\n3. Select "Save as PDF" (or "Microsoft Print to PDF")\n4. Save your PDF file\n\nScreenshot captured with all annotations visible!`);
+  // PDF format: generate real .pdf file using jsPDF
+  await generatePdf(screenshot, comments, pageName);
 }
 
 /**
  * Generate and download a real .pptx file using PptxGenJS.
- * Creates a widescreen slide with the screenshot and numbered comments.
- * If there are too many comments for one slide, overflows to additional slides.
+ * Creates a widescreen slide with the screenshot and numbered comments side-by-side.
  */
 async function generatePptx(screenshot, comments, pageName) {
   const pres = new PptxGenJS();
@@ -1201,18 +1004,21 @@ async function generatePptx(screenshot, comments, pageName) {
 
   const slideW = 13.33;
   const slideH = 7.5;
-  const margin = 0.5;
+  const margin = 0.3;
   const contentW = slideW - margin * 2;
 
   // Title height
-  const titleH = 0.5;
+  const titleH = 0.4;
   const titleY = margin;
 
-  // Screenshot area
-  const screenshotY = titleY + titleH + 0.2;
-  const commentsStartY = 5.2; // Where comments begin
-  const screenshotMaxH = commentsStartY - screenshotY - 0.2;
-  const screenshotW = contentW;
+  // Content area after title
+  const contentY = titleY + titleH + 0.2;
+  const contentH = slideH - contentY - margin;
+
+  // Split content area: 80% for screenshot, 20% for comments
+  const screenshotW = contentW * 0.80;
+  const commentsW = contentW * 0.18;
+  const gap = contentW - screenshotW - commentsW; // spacing between screenshot and comments
 
   // First slide
   let slide = pres.addSlide();
@@ -1229,43 +1035,60 @@ async function generatePptx(screenshot, comments, pageName) {
     fontFace: 'Arial',
   });
 
-  // Screenshot — calculate dimensions to maintain aspect ratio (contain-fit)
+  // Screenshot — left side, calculate dimensions to maintain aspect ratio
   if (screenshot) {
     const img = new Image();
     img.src = screenshot;
-    await new Promise(resolve => { img.onload = resolve; });
-
-    const imgAspect = img.naturalWidth / img.naturalHeight;
-    const boxAspect = screenshotW / screenshotMaxH;
-
-    let imgW, imgH;
-    if (imgAspect > boxAspect) {
-      // Image is wider than box — fit to width
-      imgW = screenshotW;
-      imgH = screenshotW / imgAspect;
-    } else {
-      // Image is taller than box — fit to height
-      imgH = screenshotMaxH;
-      imgW = screenshotMaxH * imgAspect;
-    }
-
-    // Center the image within the available area
-    const imgX = margin + (screenshotW - imgW) / 2;
-    const imgY = screenshotY + (screenshotMaxH - imgH) / 2;
-
-    slide.addImage({
-      data: screenshot,
-      x: imgX,
-      y: imgY,
-      w: imgW,
-      h: imgH,
+    const imgLoaded = await new Promise(resolve => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
     });
+
+    if (imgLoaded) {
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const boxAspect = screenshotW / contentH;
+
+      let imgW, imgH;
+      if (imgAspect > boxAspect) {
+        // Image is wider than box — fit to width
+        imgW = screenshotW;
+        imgH = screenshotW / imgAspect;
+      } else {
+        // Image is taller than box — fit to height
+        imgH = contentH;
+        imgW = contentH * imgAspect;
+      }
+
+      // Center the image vertically within the available area
+      const imgX = margin;
+      const imgY = contentY + (contentH - imgH) / 2;
+
+      slide.addImage({
+        data: screenshot,
+        x: imgX,
+        y: imgY,
+        w: imgW,
+        h: imgH,
+      });
+    } else {
+      slide.addText('Screenshot capture failed', {
+        x: margin,
+        y: contentY,
+        w: screenshotW,
+        h: contentH,
+        align: 'center',
+        valign: 'middle',
+        fontSize: 14,
+        color: '999999',
+        fontFace: 'Arial',
+      });
+    }
   } else {
     slide.addText('Screenshot capture failed', {
       x: margin,
-      y: screenshotY,
+      y: contentY,
       w: screenshotW,
-      h: screenshotMaxH,
+      h: contentH,
       align: 'center',
       valign: 'middle',
       fontSize: 14,
@@ -1274,10 +1097,28 @@ async function generatePptx(screenshot, comments, pageName) {
     });
   }
 
-  // Comments section
-  const commentLineH = 0.35;
-  const maxCommentsPerSlide = Math.floor((slideH - commentsStartY - margin) / commentLineH);
-  let currentY = commentsStartY;
+  // Comments section — right side
+  const commentsX = margin + screenshotW + gap;
+  
+  // Add "Comments" header
+  slide.addText('Comments', {
+    x: commentsX,
+    y: contentY,
+    w: commentsW,
+    h: 0.3,
+    fontSize: 12,
+    bold: true,
+    color: '0078d4',
+    fontFace: 'Arial',
+  });
+
+  // Comments list
+  const commentsListY = contentY + 0.35;
+  const commentsListH = contentH - 0.35;
+  const commentLineH = 0.28;
+  const maxCommentsPerSlide = Math.floor(commentsListH / commentLineH);
+
+  let currentY = commentsListY;
   let commentsOnSlide = 0;
 
   for (let i = 0; i < comments.length; i++) {
@@ -1294,36 +1135,49 @@ async function generatePptx(screenshot, comments, pageName) {
         color: '0078d4',
         fontFace: 'Arial',
       });
-      currentY = margin + titleH + 0.2;
+      
+      slide.addText('Comments (continued)', {
+        x: margin,
+        y: contentY,
+        w: contentW,
+        h: 0.3,
+        fontSize: 12,
+        bold: true,
+        color: '0078d4',
+        fontFace: 'Arial',
+      });
+      
+      currentY = commentsListY;
       commentsOnSlide = 0;
     }
 
     const comment = comments[i];
 
-    // Number + comment text (left-aligned)
+    // Number badge + comment text
     slide.addText([
-      { text: `#${comment.number}  `, options: { bold: true, color: '0078d4', fontSize: 11 } },
-      { text: comment.comment, options: { color: '333333', fontSize: 11 } },
+      { text: `${comment.number}  `, options: { bold: true, color: 'FFFFFF', fontSize: 9 } },
     ], {
-      x: margin,
+      x: commentsX,
       y: currentY,
-      w: contentW - 1.5,
-      h: commentLineH,
+      w: 0.25,
+      h: 0.25,
       fontFace: 'Arial',
+      align: 'center',
       valign: 'middle',
+      fill: { color: '0078d4' },
+      shape: pres.ShapeType.ellipse,
     });
 
-    // Date (right-aligned)
-    slide.addText(comment.date, {
-      x: slideW - margin - 1.2,
+    // Comment text
+    slide.addText(comment.comment, {
+      x: commentsX + 0.28,
       y: currentY,
-      w: 1.2,
+      w: commentsW - 0.28,
       h: commentLineH,
-      fontSize: 10,
-      color: '888888',
+      fontSize: 8,
+      color: '333333',
       fontFace: 'Arial',
-      align: 'right',
-      valign: 'middle',
+      valign: 'top',
     });
 
     currentY += commentLineH;
@@ -1339,11 +1193,261 @@ async function generatePptx(screenshot, comments, pageName) {
   await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nThe .pptx file has been downloaded. You can open it directly in PowerPoint or Google Slides.`);
 }
 
-// Get readable page name from URL
+/**
+ * Generate and download a real .pdf file using jsPDF.
+ * Creates an A4 landscape page with the screenshot and numbered comments side-by-side.
+ */
+async function generatePdf(screenshot, comments, pageName) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageW = 297; // A4 landscape width in mm
+  const pageH = 210; // A4 landscape height in mm
+  const margin = 10;
+  const contentW = pageW - margin * 2;
+
+  // Title section
+  const titleH = 12;
+  doc.setFontSize(18);
+  doc.setTextColor(0, 120, 212); // #0078d4
+  doc.text(pageName, margin, margin + 8);
+
+  // Annotation count
+  doc.setFontSize(10);
+  doc.setTextColor(102, 102, 102); // #666
+  const annotationText = `${comments.length} Annotation${comments.length > 1 ? 's' : ''}`;
+  const textWidth = doc.getTextWidth(annotationText);
+  doc.text(annotationText, pageW - margin - textWidth, margin + 8);
+
+  // Content area
+  const contentY = margin + titleH + 5;
+  const contentH = pageH - contentY - margin;
+
+  // Split content: 75% for screenshot, 25% for comments
+  const screenshotW = contentW * 0.75;
+  const commentsW = contentW * 0.25;
+  const gap = 5;
+
+  // Screenshot - left side
+  if (screenshot) {
+    const img = new Image();
+    img.src = screenshot;
+    const imgLoaded = await new Promise(resolve => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+    });
+
+    if (imgLoaded) {
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const boxAspect = screenshotW / contentH;
+
+      let imgW, imgH;
+      if (imgAspect > boxAspect) {
+        // Image is wider - fit to width
+        imgW = screenshotW;
+        imgH = screenshotW / imgAspect;
+      } else {
+        // Image is taller - fit to height
+        imgH = contentH;
+        imgW = contentH * imgAspect;
+      }
+
+      // Center vertically
+      const imgX = margin;
+      const imgY = contentY + (contentH - imgH) / 2;
+
+      doc.addImage(screenshot, 'PNG', imgX, imgY, imgW, imgH);
+    } else {
+      doc.setFontSize(12);
+      doc.setTextColor(153, 153, 153);
+      doc.text('Screenshot capture failed', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
+    }
+  } else {
+    // Placeholder for failed screenshot
+    doc.setFontSize(12);
+    doc.setTextColor(153, 153, 153);
+    doc.text('Screenshot capture failed', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
+  }
+
+  // Comments section - right side
+  const commentsX = margin + screenshotW + gap;
+
+  // "Comments" header
+  doc.setFontSize(14);
+  doc.setTextColor(0, 120, 212);
+  doc.text('Comments', commentsX, contentY + 5);
+
+  // Comments list
+  let currentY = contentY + 12;
+  const lineHeight = 8;
+  const badgeRadius = 3;
+
+  for (let i = 0; i < comments.length; i++) {
+    const comment = comments[i];
+
+    // Check if we need a new page
+    if (currentY + lineHeight > pageH - margin) {
+      doc.addPage();
+      currentY = margin + 10;
+
+      // Add "Comments (continued)" header
+      doc.setFontSize(14);
+      doc.setTextColor(0, 120, 212);
+      doc.text('Comments (continued)', margin, currentY);
+      currentY += 10;
+    }
+
+    // Number badge (circle)
+    doc.setFillColor(0, 120, 212); // #0078d4
+    doc.circle(commentsX + badgeRadius, currentY - 1, badgeRadius, 'F');
+
+    // Badge number
+    doc.setFontSize(9);
+    doc.setTextColor(255, 255, 255);
+    doc.text(String(comment.number), commentsX + badgeRadius, currentY + 1, { align: 'center' });
+
+    // Comment text
+    doc.setFontSize(9);
+    doc.setTextColor(51, 51, 51);
+    const textX = commentsX + badgeRadius * 2 + 3;
+    const maxWidth = commentsW - (badgeRadius * 2 + 3) - 2;
+    
+    // Split text into lines if too long
+    const lines = doc.splitTextToSize(comment.comment, maxWidth);
+    doc.text(lines, textX, currentY + 1);
+
+    currentY += Math.max(lineHeight, lines.length * 4);
+  }
+
+  // Download the PDF
+  const now = new Date();
+  const filename = `PowerBI_Pages_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.pdf`;
+
+  doc.save(filename);
+
+  await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nThe PDF file has been downloaded automatically.`);
+}
+
+// Get the Power BI report canvas element
+function getReportCanvas() {
+  // Try multiple selectors to find the report canvas
+  const canvasSelectors = [
+    'div[class*="explorationContainer"]',
+    'div.explorationContainer',
+    'visual-container-repeat',
+    'explore-canvas-modern',
+    'iframe[title*="Report"]',
+    '.reportCanvas',
+    '.visualContainer'
+  ];
+  
+  for (const selector of canvasSelectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      return element;
+    }
+  }
+
+  return null;
+}
+
+// Crop screenshot to only include the report canvas area
+async function cropScreenshotToCanvas(screenshotDataUrl, canvasElement) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const rect = canvasElement.getBoundingClientRect();
+      
+      // Create a canvas to crop the image
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Account for device pixel ratio
+      const dpr = window.devicePixelRatio || 1;
+      
+      // Set canvas size to the cropped area
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+
+      // Calculate source coordinates using the actual image-to-viewport ratio
+      // captureVisibleTab returns an image sized to viewport * dpr, so we map
+      // viewport coordinates directly to image pixels.
+      const scaleX = img.width / window.innerWidth;
+      const scaleY = img.height / window.innerHeight;
+
+      const sourceX = rect.left * scaleX;
+      const sourceY = rect.top * scaleY;
+      const sourceWidth = rect.width * scaleX;
+      const sourceHeight = rect.height * scaleY;
+      
+      // Draw the cropped portion
+      ctx.drawImage(
+        img,
+        sourceX, sourceY, sourceWidth, sourceHeight,
+        0, 0, canvas.width, canvas.height
+      );
+      
+      // Convert back to data URL
+      const croppedDataUrl = canvas.toDataURL('image/png');
+      resolve(croppedDataUrl);
+    };
+    
+    img.onerror = () => {
+      console.error('Failed to load screenshot for cropping');
+      resolve(screenshotDataUrl); // Return original if cropping fails
+    };
+    
+    img.src = screenshotDataUrl;
+  });
+}
+
 function getPageName() {
-  // Try to get page title first
+  // Try to get the active page name from Power BI's Pages panel
+  // Look for the selected/active page in the navigation pane
+  const activePageSelectors = [
+    'button[aria-selected="true"][aria-label]',
+    'button[aria-selected="true"][title]',
+    '.navigationPane .active button[title]',
+    '.navigationPane .selected button[title]',
+    '.navigationPane button.is-selected[title]',
+    '.pagesNav .active .itemName',
+    'button[role="tab"][aria-selected="true"]',
+    '.navigationPane .itemContainer.active .itemName',
+    'div[role="tablist"] button[aria-selected="true"]'
+  ];
+  
+  for (const selector of activePageSelectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      // Try aria-label first (works when navigation is collapsed)
+      let pageName = element.getAttribute('aria-label') || 
+                      element.getAttribute('title') || 
+                      element.textContent?.trim();
+      
+      if (pageName && pageName !== 'Page navigation') {
+        // Clean up common suffixes from Power BI
+        pageName = pageName
+          .replace(/[,\s]+selected$/i, '')
+          .replace(/[,\s]+active$/i, '')
+          .trim();
+        
+        if (pageName) {
+          return pageName;
+        }
+      }
+    }
+  }
+
+  // Fallback: Try to get from document title (remove " - Power BI" suffix)
   if (document.title) {
-    return document.title;
+    const cleanTitle = document.title.replace(/ - Power BI.*$/i, '').trim();
+    if (cleanTitle && cleanTitle.length > 5) {
+      return cleanTitle;
+    }
   }
 
   // Otherwise use URL path
@@ -1354,7 +1458,7 @@ function getPageName() {
     return parts[parts.length - 1];
   }
 
-  return window.location.hostname;
+  return 'Power BI Report';
 }
 
 // Create annotation element from annotation data

@@ -27,12 +27,6 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 4. Select the `powerbi-annotator` folder
 5. Done! Open any Power BI report to use it
 
-### Test It
-
-1. Open `test-page.html` in Chrome (enable "Allow access to file URLs" in extension details)
-2. Look for the **💬 button** on the right side
-3. Click it, then click **Start Annotating** and try drawing
-
 ---
 
 ## How to Use
@@ -52,11 +46,29 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 
 ### Exporting
 
-**Export Pages → PDF:** Click **Export Pages** → choose PDF → HTML downloads with embedded screenshot → open and print to PDF
+**Export Pages → PDF:**
+1. Click **Export Pages** → choose **PDF**
+2. A modal will appear asking you to click the extension icon
+3. **Click the 💬 extension icon** in the Chrome toolbar (top-right)
+4. Wait for the `.pdf` file to download directly
+5. Open the PDF file
 
-**Export Pages → PowerPoint:** Click **Export Pages** → choose PowerPoint → `.pptx` file downloads directly → open in PowerPoint or Google Slides
+**Export Pages → PowerPoint:**
+1. Click **Export Pages** → choose **PowerPoint**
+2. A modal will appear asking you to click the extension icon
+3. **Click the 💬 extension icon** in the Chrome toolbar (top-right)
+4. Wait for the `.pptx` file to download directly
+5. Open in PowerPoint or Google Slides
 
-**Export CSV (Excel):** Click **Export CSV** → CSV downloads automatically → open in Excel
+**Export CSV (Excel):**
+1. Click **Export CSV**
+2. CSV downloads automatically (no icon click needed)
+3. Open in Excel - numbers match PDF/PPT annotations (#1, #2, etc.)
+
+**Important Notes:**
+- For PDF/PowerPoint export, you **must click the extension icon** when prompted (this grants screenshot permission)
+- If you just reloaded/updated the extension, **refresh the page** before exporting
+- Export captures only the visible viewport - scroll to include off-screen content
 
 ---
 
@@ -64,16 +76,18 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 
 ```
 powerbi-annotator/
-├── manifest.json              # Extension config
+├── assets/icons/              # Extension icons
 ├── src/
-│   ├── content/
-│   │   ├── content.js        # Main logic
-│   │   └── content.css       # Styles
 │   ├── background/
-│   │   └── background.js     # Background worker
+│   │   └── background.js      # Background worker
+│   ├── content/
+│   │   ├── content.css        # Styles
+│   │   └── content.js         # Main logic
 │   └── lib/
-│       └── pptxgen.bundle.js # PptxGenJS library for .pptx export
-└── assets/icons/             # Extension icons
+│       ├── jspdf.umd.min.js   # jsPDF library for .pdf export
+│       └── pptxgen.bundle.js  # PptxGenJS library for .pptx export
+├── manifest.json              # Extension config
+└── README.md                  # Documentation
 ```
 
 ---
@@ -85,7 +99,10 @@ powerbi-annotator/
 | Extension doesn't appear | Refresh page (F5), check it's enabled at `chrome://extensions` |
 | Can't see 💬 button | Must be on app.powerbi.com, try scrolling, check for conflicting extensions |
 | Annotations not saving | Check Chrome storage permissions, reinstall extension |
-| Screenshot capture failed | Reload extension at `chrome://extensions` (click 🔄), refresh the page |
+| "Extension context invalidated" error | You reloaded the extension - **refresh the page (F5)** before exporting |
+| "Message port closed" error | Extension communication issue - **refresh the page** and try again |
+| Screenshot capture failed | Reload extension at `chrome://extensions` (click 🔄), then refresh the page |
+| Export stuck waiting for screenshot | Make sure you **click the extension icon** (💬) when the modal appears, not the page button |
 | Drawing toolbar hidden | Click "Start Annotating" first |
 
 ---
@@ -103,7 +120,7 @@ All data stored locally in Chrome. No external servers, no tracking.
 
 ## Version History
 
-**1.0.0** - Initial release with 5 drawing tools, direct PowerPoint export, PDF export, CSV export, activeTab screenshot flow, and organized structure
+**1.0.0** - Initial release with 5 drawing tools, direct PowerPoint export, direct PDF export, CSV export, activeTab screenshot flow, and organized structure
 
 ---
 
