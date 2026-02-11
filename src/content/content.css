@@ -337,6 +337,112 @@
   color: white;
 }
 
+/* Page Section */
+.pbi-page-section {
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.pbi-page-header {
+  padding: 10px 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.pbi-page-header:hover {
+  background: #f5f5f5;
+}
+
+.pbi-page-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #333;
+  font-weight: 500;
+}
+
+.pbi-page-icon {
+  font-size: 14px;
+}
+
+#pbi-current-page-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pbi-page-count-badge {
+  font-size: 11px;
+  background: #0078d4;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.pbi-page-list {
+  padding: 0 15px 10px;
+}
+
+.pbi-page-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  background: #f9f9f9;
+  border-left: 3px solid transparent;
+}
+
+.pbi-page-item.pbi-page-current {
+  background: #f0f7ff;
+  border-left-color: #0078d4;
+}
+
+.pbi-page-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pbi-page-name {
+  font-weight: 500;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pbi-page-meta {
+  font-size: 11px;
+  color: #888;
+}
+
+.pbi-page-badge-current {
+  font-size: 10px;
+  background: #0078d4;
+  color: white;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.pbi-page-empty {
+  text-align: center;
+  color: #888;
+  font-size: 12px;
+  padding: 10px;
+  margin: 0;
+}
+
 .pbi-sidebar-content {
   flex: 1;
   overflow-y: auto;
@@ -438,6 +544,9 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
   z-index: 999998;
   transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .pbi-toggle-btn:hover {

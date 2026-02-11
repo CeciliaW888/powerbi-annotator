@@ -87,5 +87,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'cancelCapture') {
     clearPendingCapture();
     sendResponse({ ok: true });
+  } else if (request.action === 'captureForCache') {
+    // Silent screenshot capture using host_permissions (no user gesture needed)
+    chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' }, (dataUrl) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ screenshot: null, error: chrome.runtime.lastError.message });
+      } else {
+        sendResponse({ screenshot: dataUrl });
+      }
+    });
+    return true; // Keep message channel open for async captureVisibleTab
   }
 });

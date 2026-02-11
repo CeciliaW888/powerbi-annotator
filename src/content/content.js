@@ -11,6 +11,9 @@ let currentColor = '#0078d4';
 let freehandPoints = [];
 let allAnnotationsCache = null; // [Fix #4] Cache to avoid read-modify-write race
 let annotationIdCounter = 0; // [Fix #11] Counter to avoid Date.now() collisions
+let lastPageKey = null; // Track current page key for SPA navigation detection
+let lastReportId = null; // Track current report ID to detect report switches
+let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
 
 // --- Custom Modal Helpers (Fix #8: replace blocking prompt/alert/confirm) ---
 
@@ -134,16 +137,42 @@ function generateAnnotationId() {
 }
 
 /**
- * Update the number badges on all annotation boxes to match current array order. [Fix #3]
+ * Get the global starting number for annotations on the current page.
+ * Counts all annotations on pages that come before this page in report order.
+ */
+function getGlobalStartNumber() {
+  if (!allAnnotationsCache) return 0;
+  
+  const currentKey = getPageKey();
+  const currentPageName = getPageName();
+  const reportPageOrder = getReportPageOrder();
+  const pages = getAnnotatedPages();
+  
+  let startNumber = 0;
+  
+  // Find current page in the ordered list and count all annotations before it
+  for (const page of pages) {
+    if (page.key === currentKey || page.name === currentPageName) {
+      break;
+    }
+    startNumber += page.count;
+  }
+  
+  return startNumber;
+}
+
+/**
+ * Update the number badges on all annotation boxes to use global numbering. [Fix #3]
  * Called after deletion to keep page badges in sync with the sidebar.
  */
 function renumberAnnotations() {
+  const globalStart = getGlobalStartNumber();
   annotations.forEach((annotation, index) => {
     const box = document.querySelector(`.pbi-annotation-box[data-id="${annotation.id}"]`);
     if (box) {
       const badge = box.querySelector('.pbi-annotation-number');
       if (badge) {
-        badge.textContent = index + 1;
+        badge.textContent = globalStart + index + 1;
       }
     }
   });
@@ -171,8 +200,164 @@ function allAnnotationsInViewport() {
 function init() {
   createSidebar();
   loadAnnotations();
+  loadScreenshotCache();
   setupEventListeners();
+  lastPageKey = getPageKey();
+  lastReportId = getReportId();
+  startNavigationWatcher();
   console.log("Power BI Annotator initialized");
+}
+
+// Poll for URL changes to detect SPA navigation (Power BI changes URL without page reload)
+function startNavigationWatcher() {
+  // Poll for URL changes (backup method)
+  setInterval(() => {
+    const currentKey = getPageKey();
+    if (currentKey !== lastPageKey) {
+      onPageChanged(lastPageKey, currentKey);
+    }
+  }, 300); // Reduced from 500ms to 300ms for faster detection
+
+  // Also listen for browser navigation events
+  window.addEventListener('popstate', () => {
+    const currentKey = getPageKey();
+    if (currentKey !== lastPageKey) {
+      onPageChanged(lastPageKey, currentKey);
+    }
+  });
+
+  window.addEventListener('hashchange', () => {
+    const currentKey = getPageKey();
+    if (currentKey !== lastPageKey) {
+      onPageChanged(lastPageKey, currentKey);
+    }
+  });
+
+  // Listen for pushState/replaceState (Power BI uses these for SPA navigation)
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+
+  history.pushState = function(...args) {
+    originalPushState.apply(this, args);
+    setTimeout(() => {
+      const currentKey = getPageKey();
+      if (currentKey !== lastPageKey) {
+        onPageChanged(lastPageKey, currentKey);
+      }
+    }, 100);
+  };
+
+  history.replaceState = function(...args) {
+    originalReplaceState.apply(this, args);
+    setTimeout(() => {
+      const currentKey = getPageKey();
+      if (currentKey !== lastPageKey) {
+        onPageChanged(lastPageKey, currentKey);
+      }
+    }, 100);
+  };
+}
+
+// Handle SPA page navigation: save current state, clear DOM, load new page's annotations
+function onPageChanged(oldKey, newKey) {
+  console.log('Page changed from', oldKey, 'to', newKey);
+  
+  // Check if we switched to a different report
+  const currentReportId = getReportId();
+  const reportChanged = lastReportId && currentReportId !== lastReportId;
+  
+  if (reportChanged) {
+    console.log('Report changed from', lastReportId, 'to', currentReportId);
+    // Turn off annotation mode when switching reports
+    if (isAnnotationMode) {
+      toggleAnnotationMode();
+    }
+  }
+  
+  lastReportId = currentReportId;
+  
+  // Immediately clear all annotation boxes from DOM (defensive - do this first)
+  document.querySelectorAll('.pbi-annotation-box').forEach(box => box.remove());
+  
+  // Save current page's annotations under the old key (before URL changed)
+  // Must use oldKey explicitly because getPageKey() now returns newKey
+  if (allAnnotationsCache === null) {
+    allAnnotationsCache = {};
+  }
+  allAnnotationsCache[oldKey] = annotations;
+  chrome.storage.local.set({ annotations: allAnnotationsCache }, () => {
+    if (chrome.runtime.lastError) {
+      console.error("Failed to save annotations:", chrome.runtime.lastError);
+    }
+  });
+
+  // Cache a screenshot of the page we're leaving (best-effort, may already be transitioning)
+  cacheCurrentScreenshot(oldKey);
+
+  // Clear again (double-check - handle any boxes that might have been created during transition)
+  document.querySelectorAll('.pbi-annotation-box').forEach(box => box.remove());
+
+  // Load new page's annotations from in-memory cache
+  if (allAnnotationsCache) {
+    annotations = allAnnotationsCache[newKey] || [];
+  } else {
+    annotations = [];
+  }
+
+  // Calculate global starting number for this page
+  const globalStart = getGlobalStartNumber();
+  
+  // Render new page's annotations with global numbering
+  annotations.forEach((annotation, index) => {
+    const box = createAnnotationElement(annotation, globalStart + index + 1);
+    document.body.appendChild(box);
+  });
+
+  lastPageKey = newKey;
+  
+  // Wait for Power BI to update the DOM before getting the page name
+  // Power BI updates the page title/navigation after URL change, not instantly
+  setTimeout(() => {
+    renderComments();
+    renderPageList();
+  }, 400); // Give Power BI 400ms to update the DOM
+}
+
+// Request a silent screenshot from the background script (uses host_permissions, no user gesture needed)
+function cacheCurrentScreenshot(pageKey) {
+  const key = pageKey || getPageKey();
+  // Don't cache if page has no annotations
+  if (allAnnotationsCache && (!allAnnotationsCache[key] || allAnnotationsCache[key].length === 0)) {
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage({ action: 'captureForCache' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.log('Screenshot cache skipped:', chrome.runtime.lastError.message);
+        return;
+      }
+      if (response && response.screenshot) {
+        screenshotCache[key] = response.screenshot;
+        // Limit to 20 most recent pages to manage storage size
+        const keys = Object.keys(screenshotCache);
+        if (keys.length > 20) {
+          delete screenshotCache[keys[0]];
+        }
+        chrome.storage.local.set({ screenshotCache });
+      }
+    });
+  } catch (e) {
+    console.log('Screenshot cache error:', e);
+  }
+}
+
+// Load cached screenshots from storage on init
+function loadScreenshotCache() {
+  chrome.storage.local.get(['screenshotCache'], (result) => {
+    if (!chrome.runtime.lastError && result.screenshotCache) {
+      screenshotCache = result.screenshotCache;
+    }
+  });
 }
 
 // Resolver for pending screenshot capture (set during export, resolved by screenshotResult message)
@@ -180,19 +365,28 @@ let screenshotResolver = null;
 
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "toggleSidebar") {
-    toggleSidebar();
-  } else if (message.action === "hideForCapture") {
-    // Hide the instruction modal before the screenshot is taken
-    const modal = document.querySelector('.pbi-modal-overlay');
-    if (modal) modal.style.display = 'none';
-  } else if (message.action === "screenshotResult") {
-    // Background captured the screenshot after the user clicked the extension icon
-    if (screenshotResolver) {
-      screenshotResolver(message);
-      screenshotResolver = null;
+  try {
+    if (message.action === "toggleSidebar") {
+      toggleSidebar();
+      sendResponse({ success: true });
+    } else if (message.action === "hideForCapture") {
+      // Hide the instruction modal before the screenshot is taken
+      const modal = document.querySelector('.pbi-modal-overlay');
+      if (modal) modal.style.display = 'none';
+      sendResponse({ success: true });
+    } else if (message.action === "screenshotResult") {
+      // Background captured the screenshot after the user clicked the extension icon
+      if (screenshotResolver) {
+        screenshotResolver(message);
+        screenshotResolver = null;
+      }
+      sendResponse({ success: true });
     }
+  } catch (error) {
+    console.error('Error handling message:', error);
+    sendResponse({ success: false, error: error.message });
   }
+  return true; // Keep the message channel open for async response
 });
 
 // Create the sidebar UI
@@ -235,10 +429,25 @@ function createSidebar() {
         <button id="pbi-export-annotations" class="pbi-btn pbi-btn-success">
           \ud83d\udcca Export CSV
         </button>
+      </div>
+      <div class="pbi-button-row">
+        <button id="pbi-clear-page" class="pbi-btn pbi-btn-danger">
+          Clear Page
+        </button>
         <button id="pbi-clear-all" class="pbi-btn pbi-btn-danger">
-          Clear
+          Clear All
         </button>
       </div>
+    </div>
+    <div class="pbi-page-section">
+      <div class="pbi-page-header" id="pbi-page-header">
+        <span class="pbi-page-indicator">
+          <span class="pbi-page-icon">\ud83d\udcc4</span>
+          <span id="pbi-current-page-name">Current Page</span>
+        </span>
+        <span id="pbi-page-count-badge" class="pbi-page-count-badge"></span>
+      </div>
+      <div class="pbi-page-list" id="pbi-page-list" style="display: none;"></div>
     </div>
     <div class="pbi-sidebar-content" id="pbi-comments-list">
       <p class="pbi-empty-state">No comments yet. Click "Start Annotating" to begin.</p>
@@ -271,6 +480,11 @@ function setupEventListeners() {
     .getElementById("pbi-toggle-annotate")
     .addEventListener("click", toggleAnnotationMode);
 
+  // Clear page annotations
+  document
+    .getElementById("pbi-clear-page")
+    .addEventListener("click", clearCurrentPageAnnotations);
+
   // Clear all annotations
   document
     .getElementById("pbi-clear-all")
@@ -297,6 +511,14 @@ function setupEventListeners() {
   // Color picker
   document.getElementById("pbi-color-picker").addEventListener("change", (e) => {
     currentColor = e.target.value;
+  });
+
+  // Page list toggle
+  document.getElementById("pbi-page-header").addEventListener("click", () => {
+    const pageList = document.getElementById("pbi-page-list");
+    const isVisible = pageList.style.display !== "none";
+    pageList.style.display = isVisible ? "none" : "block";
+    renderPageList();
   });
 
   // Mouse events for drawing annotations
@@ -360,6 +582,18 @@ function handleMouseDown(e) {
   if (e.target.closest("#pbi-annotator-sidebar")) return;
   if (e.target.closest("#pbi-drawing-toolbar")) return;
   if (e.target.closest(".pbi-modal-overlay")) return;
+  
+  // Allow clicking on Power BI navigation and UI controls without creating annotations
+  if (e.target.closest('button[role="tab"]')) return; // Page navigation tabs
+  if (e.target.closest('.navigationPane')) return; // Navigation panel
+  if (e.target.closest('.pagesNav')) return; // Pages navigation
+  if (e.target.closest('[class*="pageNavigator"]')) return; // Page navigator
+  if (e.target.closest('button')) return; // Any button (filters, slicers, etc.)
+  if (e.target.closest('a')) return; // Any link
+  if (e.target.closest('[role="button"]')) return; // Elements acting as buttons
+  if (e.target.closest('input, select, textarea')) return; // Form controls
+  if (e.target.closest('[class*="slicer"]')) return; // Slicers
+  if (e.target.closest('[class*="filter"]')) return; // Filters
 
   startX = e.pageX;
   startY = e.pageY;
@@ -550,6 +784,7 @@ async function handleMouseUp(e) {
       comment: comment.trim(),
       timestamp: new Date().toISOString(),
       url: window.location.href,
+      pageName: getPageName(),
       tool: toolUsed,
       color: colorUsed,
       freehandPath: capturedFreehandPoints,
@@ -570,7 +805,8 @@ async function handleMouseUp(e) {
     }
     const badge = document.createElement('div');
     badge.className = 'pbi-annotation-number';
-    badge.textContent = annotations.length;
+    const globalStart = getGlobalStartNumber();
+    badge.textContent = globalStart + annotations.length;
     finishedAnnotation.appendChild(badge);
 
     // Add click handler to show comment
@@ -580,6 +816,10 @@ async function handleMouseUp(e) {
     });
 
     renderComments();
+    renderPageList();
+
+    // Cache screenshot after creating an annotation (page is visible and has content)
+    cacheCurrentScreenshot();
   } else {
     finishedAnnotation.remove();
   }
@@ -589,8 +829,10 @@ async function handleMouseUp(e) {
 function showAnnotationComment(id) {
   const annotation = annotations.find((a) => a.id === id);
   if (annotation) {
+    const globalStart = getGlobalStartNumber();
+    const localIndex = annotations.indexOf(annotation);
     showModal(
-      `Comment #${annotations.indexOf(annotation) + 1}:\n\n${annotation.comment}`,
+      `Comment #${globalStart + localIndex + 1}:\n\n${annotation.comment}`,
     );
   }
 }
@@ -605,12 +847,13 @@ function renderComments() {
     return;
   }
 
+  const globalStart = getGlobalStartNumber();
   commentsList.innerHTML = annotations
     .map(
       (annotation, index) => `
     <div class="pbi-comment-item" data-id="${annotation.id}">
       <div class="pbi-comment-header">
-        <span class="pbi-comment-number">#${index + 1}</span>
+        <span class="pbi-comment-number">#${globalStart + index + 1}</span>
         <span class="pbi-comment-time">${formatTime(annotation.timestamp)}</span>
       </div>
       <div class="pbi-comment-text">${escapeHtml(annotation.comment)}</div>
@@ -639,6 +882,167 @@ function renderComments() {
       deleteAnnotation(parseInt(e.target.dataset.id));
     });
   });
+}
+
+// Get the report page order from Power BI navigation
+function getReportPageOrder() {
+  const pageOrder = [];
+  
+  // Try to find all page navigation buttons in order
+  const navigationSelectors = [
+    'button[role="tab"][aria-label]',
+    '.navigationPane button[aria-label]',
+    'button[aria-label*="Page"]',
+    '.pagesNav button',
+    'div[role="tablist"] button'
+  ];
+  
+  for (const selector of navigationSelectors) {
+    const buttons = document.querySelectorAll(selector);
+    if (buttons.length > 0) {
+      buttons.forEach(btn => {
+        const pageName = btn.getAttribute('aria-label') || btn.getAttribute('title') || btn.textContent?.trim();
+        if (pageName && pageName !== 'Page navigation' && !pageName.includes('navigation')) {
+          // Clean up the name
+          const cleanName = pageName
+            .replace(/[,\s]+selected$/i, '')
+            .replace(/[,\s]+active$/i, '')
+            .replace(/^Page\s+/i, '')
+            .trim();
+          if (cleanName && !pageOrder.includes(cleanName)) {
+            pageOrder.push(cleanName);
+          }
+        }
+      });
+      if (pageOrder.length > 0) break;
+    }
+  }
+  
+  return pageOrder;
+}
+
+// Get list of all pages that have annotations in the current report
+function getAnnotatedPages() {
+  if (!allAnnotationsCache) return [];
+  const currentKey = getPageKey();
+  const currentReportId = getReportId();
+  const reportPageOrder = getReportPageOrder();
+  
+  const pages = Object.keys(allAnnotationsCache)
+    .filter(key => {
+      if (allAnnotationsCache[key].length === 0) return false;
+      // Filter to only show pages from current report
+      // Extract report ID from the stored page URL
+      const firstAnnotation = allAnnotationsCache[key][0];
+      if (firstAnnotation && firstAnnotation.url) {
+        try {
+          const url = new URL(firstAnnotation.url);
+          const storedPath = url.pathname;
+          const storedReportMatch = storedPath.match(/\/reports\/([^\/]+)/);
+          const storedReportId = storedReportMatch ? storedReportMatch[1] : storedPath;
+          return storedReportId === currentReportId;
+        } catch (e) {
+          // If URL parsing fails, include the page
+          return true;
+        }
+      }
+      return true;
+    })
+    .map(key => {
+      const pageAnnotations = allAnnotationsCache[key];
+      // Get page name from stored annotation data (more reliable than URL parsing)
+      let name = key;
+      if (pageAnnotations.length > 0) {
+        // Use stored pageName from first annotation if available
+        if (pageAnnotations[0].pageName) {
+          name = pageAnnotations[0].pageName;
+        } else if (key === currentKey) {
+          // Fallback: use getPageName() only for current page
+          name = getPageName();
+        } else {
+          // Fallback: try to extract from URL
+          try {
+            const url = new URL(pageAnnotations[0].url || '');
+            const parts = url.pathname.split('/').filter(p => p);
+            name = parts.length > 0 ? decodeURIComponent(parts[parts.length - 1]) : key;
+          } catch (e) {
+            name = key;
+          }
+        }
+      }
+      return {
+        key,
+        name,
+        count: pageAnnotations.length,
+        isCurrent: key === currentKey,
+        hasScreenshot: !!screenshotCache[key]
+      };
+    });
+  
+  // Sort pages to match report order
+  if (reportPageOrder.length > 0) {
+    pages.sort((a, b) => {
+      const indexA = reportPageOrder.indexOf(a.name);
+      const indexB = reportPageOrder.indexOf(b.name);
+      
+      // If both pages are in the report order, sort by that order
+      if (indexA !== -1 && indexB !== -1) {
+        return indexA - indexB;
+      }
+      // If only one is in the report order, it comes first
+      if (indexA !== -1) return -1;
+      if (indexB !== -1) return 1;
+      // If neither is in the report order, sort alphabetically
+      return a.name.localeCompare(b.name);
+    });
+  } else {
+    // Fallback: sort alphabetically if we can't detect report order
+    pages.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  
+  return pages;
+}
+
+// Render the page indicator and collapsible page list in sidebar
+function renderPageList() {
+  const pageNameEl = document.getElementById('pbi-current-page-name');
+  const countBadge = document.getElementById('pbi-page-count-badge');
+  const pageList = document.getElementById('pbi-page-list');
+
+  if (!pageNameEl || !countBadge || !pageList) return;
+
+  const pages = getAnnotatedPages();
+  const currentPageName = getPageName();
+
+  // Update current page indicator
+  pageNameEl.textContent = currentPageName;
+
+  // Update page count badge
+  if (pages.length > 1) {
+    countBadge.textContent = pages.length + ' pages';
+    countBadge.style.display = '';
+  } else {
+    countBadge.textContent = '';
+    countBadge.style.display = 'none';
+  }
+
+  // Update page list (only if visible)
+  if (pageList.style.display === 'none') return;
+
+  if (pages.length === 0) {
+    pageList.innerHTML = '<p class="pbi-page-empty">No pages annotated yet.</p>';
+    return;
+  }
+
+  pageList.innerHTML = pages.map(page => `
+    <div class="pbi-page-item ${page.isCurrent ? 'pbi-page-current' : ''}">
+      <div class="pbi-page-info">
+        <span class="pbi-page-name">${escapeHtml(page.name)}</span>
+        <span class="pbi-page-meta">${page.count} comment${page.count !== 1 ? 's' : ''}${page.hasScreenshot ? ' \u2022 \ud83d\udcf8' : ''}</span>
+      </div>
+      ${page.isCurrent ? '<span class="pbi-page-badge-current">Current</span>' : ''}
+    </div>
+  `).join('');
 }
 
 // Highlight annotation on page
@@ -677,11 +1081,22 @@ async function deleteAnnotation(id) {
   saveAnnotations();
   renumberAnnotations();
   renderComments();
+  renderPageList();
 }
 
-// Clear all annotations [Fix #8] - async for custom confirm
-async function clearAllAnnotations() {
-  const confirmed = await showConfirm("Delete all comments? This cannot be undone.");
+// Clear current page annotations
+async function clearCurrentPageAnnotations() {
+  const pageName = getPageName();
+  const count = annotations.length;
+  
+  if (count === 0) {
+    await showModal("No comments on current page.");
+    return;
+  }
+
+  const confirmed = await showConfirm(
+    `Delete all ${count} comment${count > 1 ? 's' : ''} from "${pageName}"?\n\nThis cannot be undone.`
+  );
   if (!confirmed) return;
 
   annotations = [];
@@ -690,6 +1105,114 @@ async function clearAllAnnotations() {
     .forEach((box) => box.remove());
   saveAnnotations();
   renderComments();
+  renderPageList();
+}
+
+// Clear all annotations across all pages [Fix #8] - async for custom confirm
+async function clearAllAnnotations() {
+  // Count total annotations across all pages
+  const pages = getAnnotatedPages();
+  const totalCount = pages.reduce((sum, p) => sum + p.count, 0);
+  
+  if (totalCount === 0) {
+    await showModal("No comments to delete.");
+    return;
+  }
+
+  const confirmed = await showConfirm(
+    `Delete ALL comments from ALL pages (${totalCount} total across ${pages.length} page${pages.length > 1 ? 's' : ''})?\n\nThis cannot be undone.`
+  );
+  if (!confirmed) return;
+
+  // Clear current page UI
+  annotations = [];
+  document
+    .querySelectorAll(".pbi-annotation-box")
+    .forEach((box) => box.remove());
+  
+  // Clear all pages from storage
+  allAnnotationsCache = {};
+  chrome.storage.local.set({ annotations: {} }, () => {
+    if (chrome.runtime.lastError) {
+      console.error("Failed to clear annotations:", chrome.runtime.lastError);
+    }
+  });
+  
+  renderComments();
+  renderPageList();
+}
+
+// Show scope selection dialog when multiple pages have annotations
+function showScopeDialog() {
+  const pages = getAnnotatedPages();
+  if (pages.length <= 1) return Promise.resolve('current'); // Only one page, no need to ask
+
+  const totalCount = pages.reduce((sum, p) => sum + p.count, 0);
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'pbi-modal-overlay';
+    overlay.innerHTML = `
+      <div class="pbi-modal">
+        <div class="pbi-modal-body">Export scope</div>
+        <p style="color:#666;font-size:13px;margin:0 0 20px 0;">
+          You have annotations on ${pages.length} pages (${totalCount} total comments).
+        </p>
+        <div class="pbi-modal-actions" style="flex-direction:column;gap:8px;">
+          <button class="pbi-modal-btn pbi-modal-btn-primary" style="width:100%;text-align:center;" data-scope="all">
+            Export All Pages (${totalCount} comments)
+          </button>
+          <button class="pbi-modal-btn" style="width:100%;text-align:center;background:#f0f7ff;color:#0078d4;" data-scope="current">
+            Current Page Only (${annotations.length} comments)
+          </button>
+          <button class="pbi-modal-btn pbi-modal-btn-cancel" style="width:100%;text-align:center;" data-scope="cancel">
+            Cancel
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => {
+      const scope = e.target.dataset.scope;
+      if (scope) {
+        overlay.remove();
+        resolve(scope === 'cancel' ? null : scope);
+      }
+    });
+  });
+}
+
+// Build CSV rows for a set of pages (used by both single and multi-page export)
+function buildCsvRows(pages) {
+  const headers = ["No", "Page Name", "Date", "Comment"];
+  const allRows = [];
+  let globalNumber = 1;
+
+  for (const page of pages) {
+    for (const annotation of page.annotations) {
+      const date = new Date(annotation.timestamp);
+      allRows.push([
+        globalNumber++,
+        page.name,
+        date.toLocaleDateString(),
+        annotation.comment,
+      ]);
+    }
+  }
+
+  return [
+    headers.join(","),
+    ...allRows.map((row) =>
+      row
+        .map((cell) => {
+          const cellStr = String(cell);
+          if (cellStr.includes(",") || cellStr.includes('"') || cellStr.includes("\n")) {
+            return `"${cellStr.replace(/"/g, '""')}"`;
+          }
+          return cellStr;
+        })
+        .join(","),
+    ),
+  ].join("\n");
 }
 
 // Export annotations to Excel (CSV format) [Fix #8, #10]
@@ -699,59 +1222,31 @@ async function exportAnnotations() {
     return;
   }
 
-  // Get page name from URL
-  const pageName = getPageName();
+  // Check if multiple pages have annotations
+  const scope = await showScopeDialog();
+  if (!scope) return; // User cancelled
 
-  // Create CSV header
-  const headers = [
-    "No",
-    "Page Name",
-    "Date",
-    "Comment",
-  ];
+  let pages;
+  if (scope === 'all') {
+    pages = getAnnotatedPages().map(p => ({
+      name: p.name,
+      annotations: allAnnotationsCache[p.key] || []
+    }));
+  } else {
+    pages = [{ name: getPageName(), annotations }];
+  }
 
-  // Create CSV rows
-  const rows = annotations.map((annotation, index) => {
-    const date = new Date(annotation.timestamp);
-    const dateStr = date.toLocaleDateString();
-
-    return [
-      index + 1,
-      pageName,
-      dateStr,
-      annotation.comment,
-    ];
-  });
-
-  // Combine headers and rows
-  const csvContent = [
-    headers.join(","),
-    ...rows.map((row) =>
-      row
-        .map((cell) => {
-          // Escape commas and quotes in cell content
-          const cellStr = String(cell);
-          if (
-            cellStr.includes(",") ||
-            cellStr.includes('"') ||
-            cellStr.includes("\n")
-          ) {
-            return `"${cellStr.replace(/"/g, '""')}"`;
-          }
-          return cellStr;
-        })
-        .join(","),
-    ),
-  ].join("\n");
+  const totalCount = pages.reduce((sum, p) => sum + p.annotations.length, 0);
+  const csvContent = buildCsvRows(pages);
 
   // Create blob and download
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
   const link = document.createElement("a");
   const url = URL.createObjectURL(blob);
 
-  // Create filename with timestamp
   const now = new Date();
-  const filename = `PowerBI_Comments_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.csv`;
+  const suffix = scope === 'all' ? 'AllPages' : 'Comments';
+  const filename = `PowerBI_${suffix}_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.csv`;
 
   link.setAttribute("href", url);
   link.setAttribute("download", filename);
@@ -761,8 +1256,8 @@ async function exportAnnotations() {
   document.body.removeChild(link);
   URL.revokeObjectURL(url); // [Fix #10] Prevent memory leak
 
-  // Show success message
-  await showModal(`Exported ${annotations.length} comment(s) to ${filename}`);
+  const pageLabel = scope === 'all' ? ` across ${pages.length} page(s)` : '';
+  await showModal(`Exported ${totalCount} comment(s)${pageLabel} to ${filename}`);
 }
 
 // Export pages with screenshots (PDF or PPT) [Fix #8, #9]
@@ -780,12 +1275,19 @@ async function exportPages() {
     if (!proceed) return;
   }
 
+  // Check if multiple pages have annotations
+  const scope = await showScopeDialog();
+  if (!scope) return; // User cancelled
+
   // Ask user for format
   const format = await showFormatDialog();
   if (!format) return; // User cancelled
 
-  // Generate presentation with screenshots
-  await generatePresentation(format);
+  if (scope === 'all') {
+    await generateMultiPagePresentation(format);
+  } else {
+    await generatePresentation(format);
+  }
 }
 
 // Show format selection dialog
@@ -877,7 +1379,15 @@ function waitForScreenshotOrCancel() {
     overlay.querySelector('.pbi-modal-btn-cancel').addEventListener('click', () => {
       screenshotResolver = null;
       overlay.remove();
-      chrome.runtime.sendMessage({ action: 'cancelCapture' });
+      try {
+        chrome.runtime.sendMessage({ action: 'cancelCapture' }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('Could not cancel capture:', chrome.runtime.lastError.message);
+          }
+        });
+      } catch (error) {
+        console.log('Extension context error:', error);
+      }
       resolve(null);
     });
   });
@@ -899,11 +1409,34 @@ async function generatePresentation(format) {
     box.style.zIndex = '';
   });
 
+  // Get the Power BI report canvas area
+  const reportCanvas = getReportCanvas();
+  if (!reportCanvas) {
+    sidebar.style.display = '';
+    toggleBtn.style.display = '';
+    if (sidebarWasOpen) sidebar.classList.add('open');
+    await showModal('Could not find Power BI report canvas. Make sure you are on a report page.');
+    return;
+  }
+
   // Wait for rendering
   await new Promise(resolve => setTimeout(resolve, 300));
 
   // Tell background to wait for an icon click to capture the screenshot
-  chrome.runtime.sendMessage({ action: 'prepareCapture' });
+  try {
+    chrome.runtime.sendMessage({ action: 'prepareCapture' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('Could not prepare capture:', chrome.runtime.lastError.message);
+      }
+    });
+  } catch (error) {
+    console.error('Extension communication error:', error);
+    sidebar.style.display = '';
+    toggleBtn.style.display = '';
+    if (sidebarWasOpen) sidebar.classList.add('open');
+    await showModal('Unable to communicate with extension background. Try refreshing the page.');
+    return;
+  }
 
   // Show modal asking user to click the extension icon, wait for result or cancel
   let screenshot = null;
@@ -917,7 +1450,8 @@ async function generatePresentation(format) {
       return;
     }
     if (result.screenshot) {
-      screenshot = result.screenshot;
+      // Crop screenshot to only the report canvas area
+      screenshot = await cropScreenshotToCanvas(result.screenshot, reportCanvas);
     } else if (result.error) {
       console.error('Screenshot capture error:', result.error);
     }
@@ -949,251 +1483,99 @@ async function generatePresentation(format) {
     return;
   }
 
-  // PDF format: generate HTML presentation (existing behavior)
-  const escapedPageName = escapeHtml(pageName);
-  const formatLabel = escapeHtml(format.toUpperCase());
+  // PDF format: generate real .pdf file using jsPDF
+  await generatePdf(screenshot, comments, pageName);
+}
 
-  // Generate HTML presentation
-  let htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${escapedPageName} - Annotations</title>
-  <style>
-    @page {
-      size: A4 landscape;
-      margin: 15mm;
-    }
-    @media print {
-      .slide {
-        page-break-after: always;
-        page-break-inside: avoid;
+/**
+ * Generate a multi-page presentation/PDF that includes all annotated pages.
+ * Uses cached screenshots for other pages and captures a fresh screenshot for the current page.
+ */
+async function generateMultiPagePresentation(format) {
+  const pages = getAnnotatedPages();
+  const currentKey = getPageKey();
+
+  // Capture fresh screenshot for current page
+  const sidebar = document.getElementById('pbi-annotator-sidebar');
+  const toggleBtn = document.getElementById('pbi-toggle-btn');
+  const sidebarWasOpen = sidebar.classList.contains('open');
+
+  sidebar.style.display = 'none';
+  toggleBtn.style.display = 'none';
+
+  document.querySelectorAll('.pbi-annotation-box').forEach(box => {
+    box.style.opacity = '1';
+    box.style.zIndex = '';
+  });
+
+  const reportCanvas = getReportCanvas();
+
+  await new Promise(resolve => setTimeout(resolve, 300));
+
+  // Try to capture current page screenshot
+  let currentScreenshot = null;
+  try {
+    chrome.runtime.sendMessage({ action: 'prepareCapture' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('Could not prepare capture:', chrome.runtime.lastError.message);
       }
-      .print-button {
-        display: none !important;
-      }
-      body {
-        margin: 0;
-        padding: 0;
-      }
-    }
-    body {
-      margin: 20px;
-      padding: 0;
-      font-family: Arial, sans-serif;
-    }
-    .slide {
-      width: calc(100vw - 40px);
-      min-height: calc(100vh - 40px);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: flex-start;
-      padding: 40px;
-      box-sizing: border-box;
-      background: white;
-    }
-    .slide-header {
-      width: 100%;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    .slide-title {
-      font-size: 24px;
-      font-weight: bold;
-      color: #0078d4;
-    }
-    .slide-number {
-      font-size: 18px;
-      color: #666;
-    }
-    .annotation-preview {
-      max-width: 80%;
-      max-height: 60%;
-      border: 3px solid #0078d4;
-      border-radius: 8px;
-      padding: 20px;
-      background: #f5f5f5;
-      margin: 20px 0;
-    }
-    .comments-section {
-      max-width: 80%;
-      width: 100%;
-      margin-top: 40px;
-    }
-    .comments-section h2 {
-      color: #0078d4;
-      margin-bottom: 20px;
-      font-size: 24px;
-    }
-    .comment-box {
-      background: white;
-      padding: 20px;
-      border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      margin-bottom: 15px;
-    }
-    .comment-label {
-      font-size: 14px;
-      color: #666;
-      margin-bottom: 10px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-    .comment-text {
-      font-size: 18px;
-      line-height: 1.6;
-      color: #333;
-    }
-    .comment-header-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 15px;
-      padding-bottom: 10px;
-      border-bottom: 2px solid #e0e0e0;
-    }
-    .comment-number-badge {
-      background: #0078d4;
-      color: white;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 20px;
-      font-weight: bold;
-    }
-    .comment-meta {
-      display: flex;
-      gap: 15px;
-      font-size: 14px;
-      color: #666;
-    }
-    .comment-tool {
-      padding: 4px 12px;
-      background: #f0f0f0;
-      border-radius: 4px;
-    }
-    .screenshot-container {
-      width: 80%;
-      max-width: 1000px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 20px 0;
-    }
-    .screenshot-placeholder {
-      text-align: center;
-      padding: 40px;
-      background: #fff3cd;
-      border-radius: 8px;
-    }
-    .placeholder-icon {
-      font-size: 64px;
-      margin-bottom: 20px;
-    }
-    .screenshot-image {
-      max-width: 100%;
-      max-height: 600px;
-      border-radius: 4px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      border: 1px solid #ddd;
-    }
-    .print-button {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      padding: 15px 30px;
-      background: #0078d4;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      font-size: 16px;
-      cursor: pointer;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-      z-index: 1000;
-    }
-    .print-button:hover {
-      background: #005a9e;
-    }
-    @media print {
-      .print-button {
-        display: none !important;
-      }
-    }
-  </style>
-</head>
-<body>
-  <button class="print-button" onclick="window.print()">\ud83d\udda8\ufe0f Print to ${formatLabel}</button>
+    });
 
-  <div class="slide">
-    <div class="slide-header">
-      <div class="slide-title">${escapedPageName}</div>
-      <div class="slide-number">${comments.length} Annotation${comments.length > 1 ? 's' : ''}</div>
-    </div>
+    const result = await waitForScreenshotOrCancel();
+    if (result === null) {
+      sidebar.style.display = '';
+      toggleBtn.style.display = '';
+      if (sidebarWasOpen) sidebar.classList.add('open');
+      return;
+    }
+    if (result.screenshot && reportCanvas) {
+      currentScreenshot = await cropScreenshotToCanvas(result.screenshot, reportCanvas);
+    } else if (result.screenshot) {
+      currentScreenshot = result.screenshot;
+    }
+  } catch (error) {
+    console.error('Failed to capture screenshot:', error);
+  }
 
-    <div class="screenshot-container">
-      ${screenshot ?
-        `<img src="${screenshot}" class="screenshot-image" alt="Power BI Page with Annotations">` :
-        `<div class="screenshot-placeholder">
-          <div class="placeholder-icon">\u26a0\ufe0f</div>
-          <p>Screenshot capture failed</p>
-        </div>`
-      }
-    </div>
+  // Restore sidebar
+  sidebar.style.display = '';
+  toggleBtn.style.display = '';
+  if (sidebarWasOpen) sidebar.classList.add('open');
 
-    <div class="comments-section">
-      <h2>Comments</h2>
-      ${comments.map(comment => `
-        <div class="comment-box">
-          <div class="comment-header-row">
-            <div class="comment-number-badge">#${comment.number}</div>
-            <div class="comment-meta">
-              <span class="comment-tool">${escapeHtml(comment.tool)}</span>
-              <span class="comment-date">${escapeHtml(comment.date)}</span>
-            </div>
-          </div>
-          <div class="comment-text">${escapeHtml(comment.comment)}</div>
-        </div>
-      `).join('')}
-    </div>
-  </div>
-`;
+  // Update screenshot cache for current page
+  if (currentScreenshot) {
+    screenshotCache[currentKey] = currentScreenshot;
+    chrome.storage.local.set({ screenshotCache });
+  }
 
-  htmlContent += `
-</body>
-</html>
-`;
+  // Build page data array with screenshots and comments
+  let globalNumber = 1;
+  const pageDataList = pages.map(page => {
+    const pageAnnotations = allAnnotationsCache[page.key] || [];
+    const comments = pageAnnotations.map(annotation => ({
+      number: globalNumber++,
+      comment: annotation.comment,
+      date: new Date(annotation.timestamp).toLocaleDateString(),
+      tool: annotation.tool || 'rectangle',
+      color: annotation.color || '#0078d4'
+    }));
+    return {
+      pageName: page.name,
+      screenshot: screenshotCache[page.key] || null,
+      comments
+    };
+  });
 
-  // Create blob and download as HTML (which can be printed to PDF)
-  const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8;' });
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-
-  const now = new Date();
-  const filename = `PowerBI_Pages_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.html`;
-
-  link.setAttribute('href', url);
-  link.setAttribute('download', filename);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url); // [Fix #10] Prevent memory leak
-
-  // Show success message
-  await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nNext steps:\n1. Open the downloaded HTML file in your browser\n2. Click "Print to PDF" button\n3. Select "Save as PDF" (or "Microsoft Print to PDF")\n4. Save your PDF file\n\nScreenshot captured with all annotations visible!`);
+  if (format === 'ppt') {
+    await generateMultiPagePptx(pageDataList);
+  } else {
+    await generateMultiPagePdf(pageDataList);
+  }
 }
 
 /**
  * Generate and download a real .pptx file using PptxGenJS.
- * Creates a widescreen slide with the screenshot and numbered comments.
- * If there are too many comments for one slide, overflows to additional slides.
+ * Creates a widescreen slide with the screenshot and numbered comments side-by-side.
  */
 async function generatePptx(screenshot, comments, pageName) {
   const pres = new PptxGenJS();
@@ -1201,18 +1583,21 @@ async function generatePptx(screenshot, comments, pageName) {
 
   const slideW = 13.33;
   const slideH = 7.5;
-  const margin = 0.5;
+  const margin = 0.3;
   const contentW = slideW - margin * 2;
 
   // Title height
-  const titleH = 0.5;
+  const titleH = 0.4;
   const titleY = margin;
 
-  // Screenshot area
-  const screenshotY = titleY + titleH + 0.2;
-  const commentsStartY = 5.2; // Where comments begin
-  const screenshotMaxH = commentsStartY - screenshotY - 0.2;
-  const screenshotW = contentW;
+  // Content area after title
+  const contentY = titleY + titleH + 0.2;
+  const contentH = slideH - contentY - margin;
+
+  // Split content area: 80% for screenshot, 20% for comments
+  const screenshotW = contentW * 0.80;
+  const commentsW = contentW * 0.18;
+  const gap = contentW - screenshotW - commentsW; // spacing between screenshot and comments
 
   // First slide
   let slide = pres.addSlide();
@@ -1229,43 +1614,60 @@ async function generatePptx(screenshot, comments, pageName) {
     fontFace: 'Arial',
   });
 
-  // Screenshot — calculate dimensions to maintain aspect ratio (contain-fit)
+  // Screenshot — left side, calculate dimensions to maintain aspect ratio
   if (screenshot) {
     const img = new Image();
     img.src = screenshot;
-    await new Promise(resolve => { img.onload = resolve; });
-
-    const imgAspect = img.naturalWidth / img.naturalHeight;
-    const boxAspect = screenshotW / screenshotMaxH;
-
-    let imgW, imgH;
-    if (imgAspect > boxAspect) {
-      // Image is wider than box — fit to width
-      imgW = screenshotW;
-      imgH = screenshotW / imgAspect;
-    } else {
-      // Image is taller than box — fit to height
-      imgH = screenshotMaxH;
-      imgW = screenshotMaxH * imgAspect;
-    }
-
-    // Center the image within the available area
-    const imgX = margin + (screenshotW - imgW) / 2;
-    const imgY = screenshotY + (screenshotMaxH - imgH) / 2;
-
-    slide.addImage({
-      data: screenshot,
-      x: imgX,
-      y: imgY,
-      w: imgW,
-      h: imgH,
+    const imgLoaded = await new Promise(resolve => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
     });
+
+    if (imgLoaded) {
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const boxAspect = screenshotW / contentH;
+
+      let imgW, imgH;
+      if (imgAspect > boxAspect) {
+        // Image is wider than box — fit to width
+        imgW = screenshotW;
+        imgH = screenshotW / imgAspect;
+      } else {
+        // Image is taller than box — fit to height
+        imgH = contentH;
+        imgW = contentH * imgAspect;
+      }
+
+      // Center the image vertically within the available area
+      const imgX = margin;
+      const imgY = contentY + (contentH - imgH) / 2;
+
+      slide.addImage({
+        data: screenshot,
+        x: imgX,
+        y: imgY,
+        w: imgW,
+        h: imgH,
+      });
+    } else {
+      slide.addText('Screenshot capture failed', {
+        x: margin,
+        y: contentY,
+        w: screenshotW,
+        h: contentH,
+        align: 'center',
+        valign: 'middle',
+        fontSize: 14,
+        color: '999999',
+        fontFace: 'Arial',
+      });
+    }
   } else {
     slide.addText('Screenshot capture failed', {
       x: margin,
-      y: screenshotY,
+      y: contentY,
       w: screenshotW,
-      h: screenshotMaxH,
+      h: contentH,
       align: 'center',
       valign: 'middle',
       fontSize: 14,
@@ -1274,10 +1676,28 @@ async function generatePptx(screenshot, comments, pageName) {
     });
   }
 
-  // Comments section
-  const commentLineH = 0.35;
-  const maxCommentsPerSlide = Math.floor((slideH - commentsStartY - margin) / commentLineH);
-  let currentY = commentsStartY;
+  // Comments section — right side
+  const commentsX = margin + screenshotW + gap;
+  
+  // Add "Comments" header
+  slide.addText('Comments', {
+    x: commentsX,
+    y: contentY,
+    w: commentsW,
+    h: 0.3,
+    fontSize: 12,
+    bold: true,
+    color: '0078d4',
+    fontFace: 'Arial',
+  });
+
+  // Comments list
+  const commentsListY = contentY + 0.35;
+  const commentsListH = contentH - 0.35;
+  const commentLineH = 0.28;
+  const maxCommentsPerSlide = Math.floor(commentsListH / commentLineH);
+
+  let currentY = commentsListY;
   let commentsOnSlide = 0;
 
   for (let i = 0; i < comments.length; i++) {
@@ -1294,36 +1714,49 @@ async function generatePptx(screenshot, comments, pageName) {
         color: '0078d4',
         fontFace: 'Arial',
       });
-      currentY = margin + titleH + 0.2;
+      
+      slide.addText('Comments (continued)', {
+        x: margin,
+        y: contentY,
+        w: contentW,
+        h: 0.3,
+        fontSize: 12,
+        bold: true,
+        color: '0078d4',
+        fontFace: 'Arial',
+      });
+      
+      currentY = commentsListY;
       commentsOnSlide = 0;
     }
 
     const comment = comments[i];
 
-    // Number + comment text (left-aligned)
+    // Number badge + comment text
     slide.addText([
-      { text: `#${comment.number}  `, options: { bold: true, color: '0078d4', fontSize: 11 } },
-      { text: comment.comment, options: { color: '333333', fontSize: 11 } },
+      { text: `${comment.number}  `, options: { bold: true, color: 'FFFFFF', fontSize: 9 } },
     ], {
-      x: margin,
+      x: commentsX,
       y: currentY,
-      w: contentW - 1.5,
-      h: commentLineH,
+      w: 0.25,
+      h: 0.25,
       fontFace: 'Arial',
+      align: 'center',
       valign: 'middle',
+      fill: { color: '0078d4' },
+      shape: pres.ShapeType.ellipse,
     });
 
-    // Date (right-aligned)
-    slide.addText(comment.date, {
-      x: slideW - margin - 1.2,
+    // Comment text
+    slide.addText(comment.comment, {
+      x: commentsX + 0.28,
       y: currentY,
-      w: 1.2,
+      w: commentsW - 0.28,
       h: commentLineH,
-      fontSize: 10,
-      color: '888888',
+      fontSize: 8,
+      color: '333333',
       fontFace: 'Arial',
-      align: 'right',
-      valign: 'middle',
+      valign: 'top',
     });
 
     currentY += commentLineH;
@@ -1339,11 +1772,527 @@ async function generatePptx(screenshot, comments, pageName) {
   await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nThe .pptx file has been downloaded. You can open it directly in PowerPoint or Google Slides.`);
 }
 
-// Get readable page name from URL
+/**
+ * Generate and download a real .pdf file using jsPDF.
+ * Creates an A4 landscape page with the screenshot and numbered comments side-by-side.
+ */
+async function generatePdf(screenshot, comments, pageName) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageW = 297; // A4 landscape width in mm
+  const pageH = 210; // A4 landscape height in mm
+  const margin = 10;
+  const contentW = pageW - margin * 2;
+
+  // Title section
+  const titleH = 12;
+  doc.setFontSize(18);
+  doc.setTextColor(0, 120, 212); // #0078d4
+  doc.text(pageName, margin, margin + 8);
+
+  // Annotation count
+  doc.setFontSize(10);
+  doc.setTextColor(102, 102, 102); // #666
+  const annotationText = `${comments.length} Annotation${comments.length > 1 ? 's' : ''}`;
+  const textWidth = doc.getTextWidth(annotationText);
+  doc.text(annotationText, pageW - margin - textWidth, margin + 8);
+
+  // Content area
+  const contentY = margin + titleH + 5;
+  const contentH = pageH - contentY - margin;
+
+  // Split content: 75% for screenshot, 25% for comments
+  const screenshotW = contentW * 0.75;
+  const commentsW = contentW * 0.25;
+  const gap = 5;
+
+  // Screenshot - left side
+  if (screenshot) {
+    const img = new Image();
+    img.src = screenshot;
+    const imgLoaded = await new Promise(resolve => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+    });
+
+    if (imgLoaded) {
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const boxAspect = screenshotW / contentH;
+
+      let imgW, imgH;
+      if (imgAspect > boxAspect) {
+        // Image is wider - fit to width
+        imgW = screenshotW;
+        imgH = screenshotW / imgAspect;
+      } else {
+        // Image is taller - fit to height
+        imgH = contentH;
+        imgW = contentH * imgAspect;
+      }
+
+      // Center vertically
+      const imgX = margin;
+      const imgY = contentY + (contentH - imgH) / 2;
+
+      doc.addImage(screenshot, 'PNG', imgX, imgY, imgW, imgH);
+    } else {
+      doc.setFontSize(12);
+      doc.setTextColor(153, 153, 153);
+      doc.text('Screenshot capture failed', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
+    }
+  } else {
+    // Placeholder for failed screenshot
+    doc.setFontSize(12);
+    doc.setTextColor(153, 153, 153);
+    doc.text('Screenshot capture failed', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
+  }
+
+  // Comments section - right side
+  const commentsX = margin + screenshotW + gap;
+
+  // "Comments" header
+  doc.setFontSize(14);
+  doc.setTextColor(0, 120, 212);
+  doc.text('Comments', commentsX, contentY + 5);
+
+  // Comments list
+  let currentY = contentY + 12;
+  const lineHeight = 8;
+  const badgeRadius = 3;
+
+  for (let i = 0; i < comments.length; i++) {
+    const comment = comments[i];
+
+    // Check if we need a new page
+    if (currentY + lineHeight > pageH - margin) {
+      doc.addPage();
+      currentY = margin + 10;
+
+      // Add "Comments (continued)" header
+      doc.setFontSize(14);
+      doc.setTextColor(0, 120, 212);
+      doc.text('Comments (continued)', margin, currentY);
+      currentY += 10;
+    }
+
+    // Number badge (circle)
+    doc.setFillColor(0, 120, 212); // #0078d4
+    doc.circle(commentsX + badgeRadius, currentY - 1, badgeRadius, 'F');
+
+    // Badge number
+    doc.setFontSize(9);
+    doc.setTextColor(255, 255, 255);
+    doc.text(String(comment.number), commentsX + badgeRadius, currentY + 1, { align: 'center' });
+
+    // Comment text
+    doc.setFontSize(9);
+    doc.setTextColor(51, 51, 51);
+    const textX = commentsX + badgeRadius * 2 + 3;
+    const maxWidth = commentsW - (badgeRadius * 2 + 3) - 2;
+    
+    // Split text into lines if too long
+    const lines = doc.splitTextToSize(comment.comment, maxWidth);
+    doc.text(lines, textX, currentY + 1);
+
+    currentY += Math.max(lineHeight, lines.length * 4);
+  }
+
+  // Download the PDF
+  const now = new Date();
+  const filename = `PowerBI_Pages_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.pdf`;
+
+  doc.save(filename);
+
+  await showModal(`Exported page with ${comments.length} annotation${comments.length > 1 ? 's' : ''} to ${filename}\n\nThe PDF file has been downloaded automatically.`);
+}
+
+/**
+ * Generate a multi-page PDF with all annotated pages.
+ * Each page gets its own section: screenshot on left, comments on right.
+ */
+async function generateMultiPagePdf(pageDataList) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageW = 297;
+  const pageH = 210;
+  const margin = 10;
+  const contentW = pageW - margin * 2;
+  const titleH = 12;
+
+  let totalComments = 0;
+
+  for (let p = 0; p < pageDataList.length; p++) {
+    const pageData = pageDataList[p];
+    totalComments += pageData.comments.length;
+
+    // Add a new PDF page for each Power BI page (except the first)
+    if (p > 0) {
+      doc.addPage();
+    }
+
+    // Title section
+    doc.setFontSize(18);
+    doc.setTextColor(0, 120, 212);
+    doc.text(pageData.pageName, margin, margin + 8);
+
+    // Page indicator
+    doc.setFontSize(10);
+    doc.setTextColor(102, 102, 102);
+    const pageLabel = `Page ${p + 1} of ${pageDataList.length} \u2022 ${pageData.comments.length} Annotation${pageData.comments.length !== 1 ? 's' : ''}`;
+    const textWidth = doc.getTextWidth(pageLabel);
+    doc.text(pageLabel, pageW - margin - textWidth, margin + 8);
+
+    // Content area
+    const contentY = margin + titleH + 5;
+    const contentH = pageH - contentY - margin;
+    const screenshotW = contentW * 0.75;
+    const commentsW = contentW * 0.25;
+    const gap = 5;
+
+    // Screenshot - left side
+    if (pageData.screenshot) {
+      const img = new Image();
+      img.src = pageData.screenshot;
+      const imgLoaded = await new Promise(resolve => {
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+      });
+
+      if (imgLoaded) {
+        const imgAspect = img.naturalWidth / img.naturalHeight;
+        const boxAspect = screenshotW / contentH;
+        let imgW, imgH;
+        if (imgAspect > boxAspect) {
+          imgW = screenshotW;
+          imgH = screenshotW / imgAspect;
+        } else {
+          imgH = contentH;
+          imgW = contentH * imgAspect;
+        }
+        const imgX = margin;
+        const imgY = contentY + (contentH - imgH) / 2;
+        doc.addImage(pageData.screenshot, 'PNG', imgX, imgY, imgW, imgH);
+      } else {
+        doc.setFontSize(12);
+        doc.setTextColor(153, 153, 153);
+        doc.text('Screenshot failed to load', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
+      }
+    } else {
+      // No cached screenshot
+      doc.setFontSize(12);
+      doc.setTextColor(153, 153, 153);
+      doc.text('No screenshot available', margin + screenshotW / 2, contentY + contentH / 2, { align: 'center' });
+      doc.setFontSize(9);
+      doc.text('(Visit and annotate this page to cache a screenshot)', margin + screenshotW / 2, contentY + contentH / 2 + 6, { align: 'center' });
+    }
+
+    // Comments section - right side
+    const commentsX = margin + screenshotW + gap;
+    doc.setFontSize(14);
+    doc.setTextColor(0, 120, 212);
+    doc.text('Comments', commentsX, contentY + 5);
+
+    let currentY = contentY + 12;
+    const lineHeight = 8;
+    const badgeRadius = 3;
+
+    for (let i = 0; i < pageData.comments.length; i++) {
+      const comment = pageData.comments[i];
+
+      // Check if we need a new PDF page for overflow
+      if (currentY + lineHeight > pageH - margin) {
+        doc.addPage();
+        currentY = margin + 10;
+        doc.setFontSize(14);
+        doc.setTextColor(0, 120, 212);
+        doc.text(pageData.pageName + ' \u2014 Comments (continued)', margin, currentY);
+        currentY += 10;
+      }
+
+      // Number badge
+      doc.setFillColor(0, 120, 212);
+      doc.circle(commentsX + badgeRadius, currentY - 1, badgeRadius, 'F');
+      doc.setFontSize(9);
+      doc.setTextColor(255, 255, 255);
+      doc.text(String(comment.number), commentsX + badgeRadius, currentY + 1, { align: 'center' });
+
+      // Comment text
+      doc.setFontSize(9);
+      doc.setTextColor(51, 51, 51);
+      const textX = commentsX + badgeRadius * 2 + 3;
+      const maxWidth = commentsW - (badgeRadius * 2 + 3) - 2;
+      const lines = doc.splitTextToSize(comment.comment, maxWidth);
+      doc.text(lines, textX, currentY + 1);
+
+      currentY += Math.max(lineHeight, lines.length * 4);
+    }
+  }
+
+  const now = new Date();
+  const filename = `PowerBI_AllPages_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.pdf`;
+  doc.save(filename);
+
+  await showModal(`Exported ${pageDataList.length} page(s) with ${totalComments} annotation(s) to ${filename}\n\nThe PDF file has been downloaded automatically.`);
+}
+
+/**
+ * Generate a multi-page PPTX with all annotated pages.
+ * Each page gets its own slide: screenshot on left, comments on right.
+ */
+async function generateMultiPagePptx(pageDataList) {
+  const pres = new PptxGenJS();
+  pres.layout = 'LAYOUT_WIDE';
+
+  const slideW = 13.33;
+  const slideH = 7.5;
+  const margin = 0.3;
+  const contentW = slideW - margin * 2;
+  const titleH = 0.4;
+  const titleY = margin;
+  const contentY = titleY + titleH + 0.2;
+  const contentH = slideH - contentY - margin;
+  const screenshotW = contentW * 0.80;
+  const commentsW = contentW * 0.18;
+  const gap = contentW - screenshotW - commentsW;
+
+  let totalComments = 0;
+
+  for (let p = 0; p < pageDataList.length; p++) {
+    const pageData = pageDataList[p];
+    totalComments += pageData.comments.length;
+
+    let slide = pres.addSlide();
+
+    // Title with page indicator
+    const titleText = pageData.pageName + (pageDataList.length > 1 ? ` (${p + 1}/${pageDataList.length})` : '');
+    slide.addText(titleText, {
+      x: margin, y: titleY, w: contentW, h: titleH,
+      fontSize: 18, bold: true, color: '0078d4', fontFace: 'Arial',
+    });
+
+    // Screenshot
+    if (pageData.screenshot) {
+      const img = new Image();
+      img.src = pageData.screenshot;
+      const imgLoaded = await new Promise(resolve => {
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+      });
+
+      if (imgLoaded) {
+        const imgAspect = img.naturalWidth / img.naturalHeight;
+        const boxAspect = screenshotW / contentH;
+        let imgW, imgH;
+        if (imgAspect > boxAspect) {
+          imgW = screenshotW;
+          imgH = screenshotW / imgAspect;
+        } else {
+          imgH = contentH;
+          imgW = contentH * imgAspect;
+        }
+        slide.addImage({
+          data: pageData.screenshot,
+          x: margin, y: contentY + (contentH - imgH) / 2,
+          w: imgW, h: imgH,
+        });
+      } else {
+        slide.addText('Screenshot failed to load', {
+          x: margin, y: contentY, w: screenshotW, h: contentH,
+          align: 'center', valign: 'middle', fontSize: 14, color: '999999', fontFace: 'Arial',
+        });
+      }
+    } else {
+      slide.addText('No screenshot available\n(Visit this page to cache a screenshot)', {
+        x: margin, y: contentY, w: screenshotW, h: contentH,
+        align: 'center', valign: 'middle', fontSize: 14, color: '999999', fontFace: 'Arial',
+      });
+    }
+
+    // Comments section
+    const commentsX = margin + screenshotW + gap;
+    slide.addText('Comments', {
+      x: commentsX, y: contentY, w: commentsW, h: 0.3,
+      fontSize: 12, bold: true, color: '0078d4', fontFace: 'Arial',
+    });
+
+    const commentsListY = contentY + 0.35;
+    const commentsListH = contentH - 0.35;
+    const commentLineH = 0.28;
+    const maxCommentsPerSlide = Math.floor(commentsListH / commentLineH);
+    let currentSlideY = commentsListY;
+    let commentsOnSlide = 0;
+
+    for (let i = 0; i < pageData.comments.length; i++) {
+      if (commentsOnSlide >= maxCommentsPerSlide) {
+        slide = pres.addSlide();
+        slide.addText(pageData.pageName + ' (continued)', {
+          x: margin, y: margin, w: contentW, h: titleH,
+          fontSize: 18, bold: true, color: '0078d4', fontFace: 'Arial',
+        });
+        slide.addText('Comments (continued)', {
+          x: margin, y: contentY, w: contentW, h: 0.3,
+          fontSize: 12, bold: true, color: '0078d4', fontFace: 'Arial',
+        });
+        currentSlideY = commentsListY;
+        commentsOnSlide = 0;
+      }
+
+      const comment = pageData.comments[i];
+
+      // Number badge
+      slide.addText([
+        { text: `${comment.number}  `, options: { bold: true, color: 'FFFFFF', fontSize: 9 } },
+      ], {
+        x: commentsX, y: currentSlideY, w: 0.25, h: 0.25,
+        fontFace: 'Arial', align: 'center', valign: 'middle',
+        fill: { color: '0078d4' }, shape: pres.ShapeType.ellipse,
+      });
+
+      // Comment text
+      slide.addText(comment.comment, {
+        x: commentsX + 0.28, y: currentSlideY,
+        w: commentsW - 0.28, h: commentLineH,
+        fontSize: 8, color: '333333', fontFace: 'Arial', valign: 'top',
+      });
+
+      currentSlideY += commentLineH;
+      commentsOnSlide++;
+    }
+  }
+
+  const now = new Date();
+  const filename = `PowerBI_AllPages_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.pptx`;
+  await pres.writeFile({ fileName: filename });
+
+  await showModal(`Exported ${pageDataList.length} page(s) with ${totalComments} annotation(s) to ${filename}\n\nThe .pptx file has been downloaded. You can open it directly in PowerPoint or Google Slides.`);
+}
+
+// Get the Power BI report canvas element
+function getReportCanvas() {
+  // Try multiple selectors to find the report canvas
+  const canvasSelectors = [
+    'div[class*="explorationContainer"]',
+    'div.explorationContainer',
+    'visual-container-repeat',
+    'explore-canvas-modern',
+    'iframe[title*="Report"]',
+    '.reportCanvas',
+    '.visualContainer'
+  ];
+  
+  for (const selector of canvasSelectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      return element;
+    }
+  }
+
+  return null;
+}
+
+// Crop screenshot to only include the report canvas area
+async function cropScreenshotToCanvas(screenshotDataUrl, canvasElement) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const rect = canvasElement.getBoundingClientRect();
+      
+      // Create a canvas to crop the image
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Account for device pixel ratio
+      const dpr = window.devicePixelRatio || 1;
+      
+      // Set canvas size to the cropped area
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+
+      // Calculate source coordinates using the actual image-to-viewport ratio
+      // captureVisibleTab returns an image sized to viewport * dpr, so we map
+      // viewport coordinates directly to image pixels.
+      const scaleX = img.width / window.innerWidth;
+      const scaleY = img.height / window.innerHeight;
+
+      const sourceX = rect.left * scaleX;
+      const sourceY = rect.top * scaleY;
+      const sourceWidth = rect.width * scaleX;
+      const sourceHeight = rect.height * scaleY;
+      
+      // Draw the cropped portion
+      ctx.drawImage(
+        img,
+        sourceX, sourceY, sourceWidth, sourceHeight,
+        0, 0, canvas.width, canvas.height
+      );
+      
+      // Convert back to data URL
+      const croppedDataUrl = canvas.toDataURL('image/png');
+      resolve(croppedDataUrl);
+    };
+    
+    img.onerror = () => {
+      console.error('Failed to load screenshot for cropping');
+      resolve(screenshotDataUrl); // Return original if cropping fails
+    };
+    
+    img.src = screenshotDataUrl;
+  });
+}
+
 function getPageName() {
-  // Try to get page title first
+  // Try to get the active page name from Power BI's Pages panel
+  // Look for the selected/active page in the navigation pane
+  const activePageSelectors = [
+    'button[aria-selected="true"][aria-label]',
+    'button[aria-selected="true"][title]',
+    '.navigationPane .active button[title]',
+    '.navigationPane .selected button[title]',
+    '.navigationPane button.is-selected[title]',
+    '.pagesNav .active .itemName',
+    'button[role="tab"][aria-selected="true"]',
+    '.navigationPane .itemContainer.active .itemName',
+    'div[role="tablist"] button[aria-selected="true"]'
+  ];
+  
+  for (const selector of activePageSelectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      // Try aria-label first (works when navigation is collapsed)
+      let pageName = element.getAttribute('aria-label') || 
+                      element.getAttribute('title') || 
+                      element.textContent?.trim();
+      
+      if (pageName && pageName !== 'Page navigation') {
+        // Clean up common suffixes from Power BI
+        pageName = pageName
+          .replace(/[,\s]+selected$/i, '')
+          .replace(/[,\s]+active$/i, '')
+          .trim();
+        
+        if (pageName) {
+          return pageName;
+        }
+      }
+    }
+  }
+
+  // Fallback: Try to get from document title (remove " - Power BI" suffix)
   if (document.title) {
-    return document.title;
+    const cleanTitle = document.title.replace(/ - Power BI.*$/i, '').trim();
+    if (cleanTitle && cleanTitle.length > 5) {
+      return cleanTitle;
+    }
   }
 
   // Otherwise use URL path
@@ -1354,7 +2303,7 @@ function getPageName() {
     return parts[parts.length - 1];
   }
 
-  return window.location.hostname;
+  return 'Power BI Report';
 }
 
 // Create annotation element from annotation data
@@ -1541,14 +2490,56 @@ function loadAnnotations() {
       chrome.storage.local.set({ annotations: allAnnotationsCache });
     }
 
-    // Render saved annotations on page
+    // Migrate old annotations to include pageName field
+    let needsSave = false;
+    const currentPageName = getPageName();
+    annotations.forEach(annotation => {
+      if (!annotation.pageName) {
+        annotation.pageName = currentPageName;
+        needsSave = true;
+      }
+    });
+    if (needsSave) {
+      allAnnotationsCache[pageKey] = annotations;
+      chrome.storage.local.set({ annotations: allAnnotationsCache });
+    }
+
+    // Calculate global starting number for this page
+    const globalStart = getGlobalStartNumber();
+    
+    // Render saved annotations on page with global numbering
     annotations.forEach((annotation, index) => {
-      const box = createAnnotationElement(annotation, index + 1);
+      const box = createAnnotationElement(annotation, globalStart + index + 1);
       document.body.appendChild(box);
     });
 
     renderComments();
+    renderPageList();
   });
+}
+
+// Extract report ID from Power BI URL
+function getReportId() {
+  // Power BI URL format: /groups/{workspace}/reports/{reportId}/ReportSection...
+  // or: /reportEmbed?reportId={reportId}
+  const pathname = window.location.pathname;
+  const search = window.location.search;
+  
+  // Try to extract from path
+  const pathMatch = pathname.match(/\/reports\/([^\/]+)/);
+  if (pathMatch) {
+    return pathMatch[1];
+  }
+  
+  // Try to extract from query params
+  const searchParams = new URLSearchParams(search);
+  const reportId = searchParams.get('reportId');
+  if (reportId) {
+    return reportId;
+  }
+  
+  // Fallback: use full pathname as report ID
+  return pathname.split('/').filter(p => p).join('_');
 }
 
 // Get unique key for current page [Fix #5] - includes query params for Power BI page navigation

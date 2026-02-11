@@ -20,7 +20,7 @@
         "https://*.powerbi.com/*",
         "file:///*"
       ],
-      "js": ["src/lib/pptxgen.bundle.js", "src/content/content.js"],
+      "js": ["src/lib/pptxgen.bundle.js", "src/lib/jspdf.umd.min.js", "src/content/content.js"],
       "css": ["src/content/content.css"],
       "run_at": "document_idle"
     }
