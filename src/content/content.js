@@ -136,16 +136,42 @@ function generateAnnotationId() {
 }
 
 /**
- * Update the number badges on all annotation boxes to match current array order. [Fix #3]
+ * Get the global starting number for annotations on the current page.
+ * Counts all annotations on pages that come before this page in report order.
+ */
+function getGlobalStartNumber() {
+  if (!allAnnotationsCache) return 0;
+  
+  const currentKey = getPageKey();
+  const currentPageName = getPageName();
+  const reportPageOrder = getReportPageOrder();
+  const pages = getAnnotatedPages();
+  
+  let startNumber = 0;
+  
+  // Find current page in the ordered list and count all annotations before it
+  for (const page of pages) {
+    if (page.key === currentKey || page.name === currentPageName) {
+      break;
+    }
+    startNumber += page.count;
+  }
+  
+  return startNumber;
+}
+
+/**
+ * Update the number badges on all annotation boxes to use global numbering. [Fix #3]
  * Called after deletion to keep page badges in sync with the sidebar.
  */
 function renumberAnnotations() {
+  const globalStart = getGlobalStartNumber();
   annotations.forEach((annotation, index) => {
     const box = document.querySelector(`.pbi-annotation-box[data-id="${annotation.id}"]`);
     if (box) {
       const badge = box.querySelector('.pbi-annotation-number');
       if (badge) {
-        badge.textContent = index + 1;
+        badge.textContent = globalStart + index + 1;
       }
     }
   });
@@ -182,28 +208,77 @@ function init() {
 
 // Poll for URL changes to detect SPA navigation (Power BI changes URL without page reload)
 function startNavigationWatcher() {
+  // Poll for URL changes (backup method)
   setInterval(() => {
     const currentKey = getPageKey();
     if (currentKey !== lastPageKey) {
       onPageChanged(lastPageKey, currentKey);
     }
-  }, 500);
+  }, 300); // Reduced from 500ms to 300ms for faster detection
+
+  // Also listen for browser navigation events
+  window.addEventListener('popstate', () => {
+    const currentKey = getPageKey();
+    if (currentKey !== lastPageKey) {
+      onPageChanged(lastPageKey, currentKey);
+    }
+  });
+
+  window.addEventListener('hashchange', () => {
+    const currentKey = getPageKey();
+    if (currentKey !== lastPageKey) {
+      onPageChanged(lastPageKey, currentKey);
+    }
+  });
+
+  // Listen for pushState/replaceState (Power BI uses these for SPA navigation)
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+
+  history.pushState = function(...args) {
+    originalPushState.apply(this, args);
+    setTimeout(() => {
+      const currentKey = getPageKey();
+      if (currentKey !== lastPageKey) {
+        onPageChanged(lastPageKey, currentKey);
+      }
+    }, 100);
+  };
+
+  history.replaceState = function(...args) {
+    originalReplaceState.apply(this, args);
+    setTimeout(() => {
+      const currentKey = getPageKey();
+      if (currentKey !== lastPageKey) {
+        onPageChanged(lastPageKey, currentKey);
+      }
+    }, 100);
+  };
 }
 
 // Handle SPA page navigation: save current state, clear DOM, load new page's annotations
 function onPageChanged(oldKey, newKey) {
-  // Save current page's annotations under the old key
-  saveAnnotations();
+  console.log('Page changed from', oldKey, 'to', newKey);
+  
+  // Immediately clear all annotation boxes from DOM (defensive - do this first)
+  document.querySelectorAll('.pbi-annotation-box').forEach(box => box.remove());
+  
+  // Save current page's annotations under the old key (before URL changed)
+  // Must use oldKey explicitly because getPageKey() now returns newKey
+  if (allAnnotationsCache === null) {
+    allAnnotationsCache = {};
+  }
+  allAnnotationsCache[oldKey] = annotations;
+  chrome.storage.local.set({ annotations: allAnnotationsCache }, () => {
+    if (chrome.runtime.lastError) {
+      console.error("Failed to save annotations:", chrome.runtime.lastError);
+    }
+  });
 
   // Cache a screenshot of the page we're leaving (best-effort, may already be transitioning)
   cacheCurrentScreenshot(oldKey);
 
-  // Turn off annotation mode if active
-  if (isAnnotationMode) {
-    toggleAnnotationMode();
-  }
-
-  // Clear annotation DOM elements from old page
+  // Clear again (double-check - handle any boxes that might have been created during transition)
   document.querySelectorAll('.pbi-annotation-box').forEach(box => box.remove());
 
   // Load new page's annotations from in-memory cache
@@ -213,15 +288,23 @@ function onPageChanged(oldKey, newKey) {
     annotations = [];
   }
 
-  // Render new page's annotations
+  // Calculate global starting number for this page
+  const globalStart = getGlobalStartNumber();
+  
+  // Render new page's annotations with global numbering
   annotations.forEach((annotation, index) => {
-    const box = createAnnotationElement(annotation, index + 1);
+    const box = createAnnotationElement(annotation, globalStart + index + 1);
     document.body.appendChild(box);
   });
 
   lastPageKey = newKey;
-  renderComments();
-  renderPageList();
+  
+  // Wait for Power BI to update the DOM before getting the page name
+  // Power BI updates the page title/navigation after URL change, not instantly
+  setTimeout(() => {
+    renderComments();
+    renderPageList();
+  }, 400); // Give Power BI 400ms to update the DOM
 }
 
 // Request a silent screenshot from the background script (uses host_permissions, no user gesture needed)
@@ -330,8 +413,13 @@ function createSidebar() {
         <button id="pbi-export-annotations" class="pbi-btn pbi-btn-success">
           \ud83d\udcca Export CSV
         </button>
+      </div>
+      <div class="pbi-button-row">
+        <button id="pbi-clear-page" class="pbi-btn pbi-btn-danger">
+          Clear Page
+        </button>
         <button id="pbi-clear-all" class="pbi-btn pbi-btn-danger">
-          Clear
+          Clear All
         </button>
       </div>
     </div>
@@ -375,6 +463,11 @@ function setupEventListeners() {
   document
     .getElementById("pbi-toggle-annotate")
     .addEventListener("click", toggleAnnotationMode);
+
+  // Clear page annotations
+  document
+    .getElementById("pbi-clear-page")
+    .addEventListener("click", clearCurrentPageAnnotations);
 
   // Clear all annotations
   document
@@ -473,6 +566,18 @@ function handleMouseDown(e) {
   if (e.target.closest("#pbi-annotator-sidebar")) return;
   if (e.target.closest("#pbi-drawing-toolbar")) return;
   if (e.target.closest(".pbi-modal-overlay")) return;
+  
+  // Allow clicking on Power BI navigation and UI controls without creating annotations
+  if (e.target.closest('button[role="tab"]')) return; // Page navigation tabs
+  if (e.target.closest('.navigationPane')) return; // Navigation panel
+  if (e.target.closest('.pagesNav')) return; // Pages navigation
+  if (e.target.closest('[class*="pageNavigator"]')) return; // Page navigator
+  if (e.target.closest('button')) return; // Any button (filters, slicers, etc.)
+  if (e.target.closest('a')) return; // Any link
+  if (e.target.closest('[role="button"]')) return; // Elements acting as buttons
+  if (e.target.closest('input, select, textarea')) return; // Form controls
+  if (e.target.closest('[class*="slicer"]')) return; // Slicers
+  if (e.target.closest('[class*="filter"]')) return; // Filters
 
   startX = e.pageX;
   startY = e.pageY;
@@ -663,6 +768,7 @@ async function handleMouseUp(e) {
       comment: comment.trim(),
       timestamp: new Date().toISOString(),
       url: window.location.href,
+      pageName: getPageName(),
       tool: toolUsed,
       color: colorUsed,
       freehandPath: capturedFreehandPoints,
@@ -683,7 +789,8 @@ async function handleMouseUp(e) {
     }
     const badge = document.createElement('div');
     badge.className = 'pbi-annotation-number';
-    badge.textContent = annotations.length;
+    const globalStart = getGlobalStartNumber();
+    badge.textContent = globalStart + annotations.length;
     finishedAnnotation.appendChild(badge);
 
     // Add click handler to show comment
@@ -706,8 +813,10 @@ async function handleMouseUp(e) {
 function showAnnotationComment(id) {
   const annotation = annotations.find((a) => a.id === id);
   if (annotation) {
+    const globalStart = getGlobalStartNumber();
+    const localIndex = annotations.indexOf(annotation);
     showModal(
-      `Comment #${annotations.indexOf(annotation) + 1}:\n\n${annotation.comment}`,
+      `Comment #${globalStart + localIndex + 1}:\n\n${annotation.comment}`,
     );
   }
 }
@@ -722,12 +831,13 @@ function renderComments() {
     return;
   }
 
+  const globalStart = getGlobalStartNumber();
   commentsList.innerHTML = annotations
     .map(
       (annotation, index) => `
     <div class="pbi-comment-item" data-id="${annotation.id}">
       <div class="pbi-comment-header">
-        <span class="pbi-comment-number">#${index + 1}</span>
+        <span class="pbi-comment-number">#${globalStart + index + 1}</span>
         <span class="pbi-comment-time">${formatTime(annotation.timestamp)}</span>
       </div>
       <div class="pbi-comment-text">${escapeHtml(annotation.comment)}</div>
@@ -758,29 +868,71 @@ function renderComments() {
   });
 }
 
+// Get the report page order from Power BI navigation
+function getReportPageOrder() {
+  const pageOrder = [];
+  
+  // Try to find all page navigation buttons in order
+  const navigationSelectors = [
+    'button[role="tab"][aria-label]',
+    '.navigationPane button[aria-label]',
+    'button[aria-label*="Page"]',
+    '.pagesNav button',
+    'div[role="tablist"] button'
+  ];
+  
+  for (const selector of navigationSelectors) {
+    const buttons = document.querySelectorAll(selector);
+    if (buttons.length > 0) {
+      buttons.forEach(btn => {
+        const pageName = btn.getAttribute('aria-label') || btn.getAttribute('title') || btn.textContent?.trim();
+        if (pageName && pageName !== 'Page navigation' && !pageName.includes('navigation')) {
+          // Clean up the name
+          const cleanName = pageName
+            .replace(/[,\s]+selected$/i, '')
+            .replace(/[,\s]+active$/i, '')
+            .replace(/^Page\s+/i, '')
+            .trim();
+          if (cleanName && !pageOrder.includes(cleanName)) {
+            pageOrder.push(cleanName);
+          }
+        }
+      });
+      if (pageOrder.length > 0) break;
+    }
+  }
+  
+  return pageOrder;
+}
+
 // Get list of all pages that have annotations
 function getAnnotatedPages() {
   if (!allAnnotationsCache) return [];
   const currentKey = getPageKey();
-  return Object.keys(allAnnotationsCache)
+  const reportPageOrder = getReportPageOrder();
+  
+  const pages = Object.keys(allAnnotationsCache)
     .filter(key => allAnnotationsCache[key].length > 0)
     .map(key => {
       const pageAnnotations = allAnnotationsCache[key];
-      // Derive page name from the first annotation's stored URL, or from the key
+      // Get page name from stored annotation data (more reliable than URL parsing)
       let name = key;
-      if (pageAnnotations.length > 0 && pageAnnotations[0].url) {
-        try {
-          const url = new URL(pageAnnotations[0].url);
-          // Try document title pattern first (for current page)
-          if (key === currentKey) {
-            name = getPageName();
-          } else {
-            // Extract a readable name from the URL path
+      if (pageAnnotations.length > 0) {
+        // Use stored pageName from first annotation if available
+        if (pageAnnotations[0].pageName) {
+          name = pageAnnotations[0].pageName;
+        } else if (key === currentKey) {
+          // Fallback: use getPageName() only for current page
+          name = getPageName();
+        } else {
+          // Fallback: try to extract from URL
+          try {
+            const url = new URL(pageAnnotations[0].url || '');
             const parts = url.pathname.split('/').filter(p => p);
             name = parts.length > 0 ? decodeURIComponent(parts[parts.length - 1]) : key;
+          } catch (e) {
+            name = key;
           }
-        } catch (e) {
-          name = key;
         }
       }
       return {
@@ -791,6 +943,29 @@ function getAnnotatedPages() {
         hasScreenshot: !!screenshotCache[key]
       };
     });
+  
+  // Sort pages to match report order
+  if (reportPageOrder.length > 0) {
+    pages.sort((a, b) => {
+      const indexA = reportPageOrder.indexOf(a.name);
+      const indexB = reportPageOrder.indexOf(b.name);
+      
+      // If both pages are in the report order, sort by that order
+      if (indexA !== -1 && indexB !== -1) {
+        return indexA - indexB;
+      }
+      // If only one is in the report order, it comes first
+      if (indexA !== -1) return -1;
+      if (indexB !== -1) return 1;
+      // If neither is in the report order, sort alphabetically
+      return a.name.localeCompare(b.name);
+    });
+  } else {
+    // Fallback: sort alphabetically if we can't detect report order
+    pages.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  
+  return pages;
 }
 
 // Render the page indicator and collapsible page list in sidebar
@@ -874,9 +1049,19 @@ async function deleteAnnotation(id) {
   renderPageList();
 }
 
-// Clear all annotations [Fix #8] - async for custom confirm
-async function clearAllAnnotations() {
-  const confirmed = await showConfirm("Delete all comments? This cannot be undone.");
+// Clear current page annotations
+async function clearCurrentPageAnnotations() {
+  const pageName = getPageName();
+  const count = annotations.length;
+  
+  if (count === 0) {
+    await showModal("No comments on current page.");
+    return;
+  }
+
+  const confirmed = await showConfirm(
+    `Delete all ${count} comment${count > 1 ? 's' : ''} from "${pageName}"?\n\nThis cannot be undone.`
+  );
   if (!confirmed) return;
 
   annotations = [];
@@ -884,6 +1069,40 @@ async function clearAllAnnotations() {
     .querySelectorAll(".pbi-annotation-box")
     .forEach((box) => box.remove());
   saveAnnotations();
+  renderComments();
+  renderPageList();
+}
+
+// Clear all annotations across all pages [Fix #8] - async for custom confirm
+async function clearAllAnnotations() {
+  // Count total annotations across all pages
+  const pages = getAnnotatedPages();
+  const totalCount = pages.reduce((sum, p) => sum + p.count, 0);
+  
+  if (totalCount === 0) {
+    await showModal("No comments to delete.");
+    return;
+  }
+
+  const confirmed = await showConfirm(
+    `Delete ALL comments from ALL pages (${totalCount} total across ${pages.length} page${pages.length > 1 ? 's' : ''})?\n\nThis cannot be undone.`
+  );
+  if (!confirmed) return;
+
+  // Clear current page UI
+  annotations = [];
+  document
+    .querySelectorAll(".pbi-annotation-box")
+    .forEach((box) => box.remove());
+  
+  // Clear all pages from storage
+  allAnnotationsCache = {};
+  chrome.storage.local.set({ annotations: {} }, () => {
+    if (chrome.runtime.lastError) {
+      console.error("Failed to clear annotations:", chrome.runtime.lastError);
+    }
+  });
+  
   renderComments();
   renderPageList();
 }
@@ -2236,9 +2455,26 @@ function loadAnnotations() {
       chrome.storage.local.set({ annotations: allAnnotationsCache });
     }
 
-    // Render saved annotations on page
+    // Migrate old annotations to include pageName field
+    let needsSave = false;
+    const currentPageName = getPageName();
+    annotations.forEach(annotation => {
+      if (!annotation.pageName) {
+        annotation.pageName = currentPageName;
+        needsSave = true;
+      }
+    });
+    if (needsSave) {
+      allAnnotationsCache[pageKey] = annotations;
+      chrome.storage.local.set({ annotations: allAnnotationsCache });
+    }
+
+    // Calculate global starting number for this page
+    const globalStart = getGlobalStartNumber();
+    
+    // Render saved annotations on page with global numbering
     annotations.forEach((annotation, index) => {
-      const box = createAnnotationElement(annotation, index + 1);
+      const box = createAnnotationElement(annotation, globalStart + index + 1);
       document.body.appendChild(box);
     });
 
