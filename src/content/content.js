@@ -12,6 +12,7 @@ let freehandPoints = [];
 let allAnnotationsCache = null; // [Fix #4] Cache to avoid read-modify-write race
 let annotationIdCounter = 0; // [Fix #11] Counter to avoid Date.now() collisions
 let lastPageKey = null; // Track current page key for SPA navigation detection
+let lastReportId = null; // Track current report ID to detect report switches
 let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
 
 // --- Custom Modal Helpers (Fix #8: replace blocking prompt/alert/confirm) ---
@@ -202,6 +203,7 @@ function init() {
   loadScreenshotCache();
   setupEventListeners();
   lastPageKey = getPageKey();
+  lastReportId = getReportId();
   startNavigationWatcher();
   console.log("Power BI Annotator initialized");
 }
@@ -259,6 +261,20 @@ function startNavigationWatcher() {
 // Handle SPA page navigation: save current state, clear DOM, load new page's annotations
 function onPageChanged(oldKey, newKey) {
   console.log('Page changed from', oldKey, 'to', newKey);
+  
+  // Check if we switched to a different report
+  const currentReportId = getReportId();
+  const reportChanged = lastReportId && currentReportId !== lastReportId;
+  
+  if (reportChanged) {
+    console.log('Report changed from', lastReportId, 'to', currentReportId);
+    // Turn off annotation mode when switching reports
+    if (isAnnotationMode) {
+      toggleAnnotationMode();
+    }
+  }
+  
+  lastReportId = currentReportId;
   
   // Immediately clear all annotation boxes from DOM (defensive - do this first)
   document.querySelectorAll('.pbi-annotation-box').forEach(box => box.remove());
@@ -905,14 +921,33 @@ function getReportPageOrder() {
   return pageOrder;
 }
 
-// Get list of all pages that have annotations
+// Get list of all pages that have annotations in the current report
 function getAnnotatedPages() {
   if (!allAnnotationsCache) return [];
   const currentKey = getPageKey();
+  const currentReportId = getReportId();
   const reportPageOrder = getReportPageOrder();
   
   const pages = Object.keys(allAnnotationsCache)
-    .filter(key => allAnnotationsCache[key].length > 0)
+    .filter(key => {
+      if (allAnnotationsCache[key].length === 0) return false;
+      // Filter to only show pages from current report
+      // Extract report ID from the stored page URL
+      const firstAnnotation = allAnnotationsCache[key][0];
+      if (firstAnnotation && firstAnnotation.url) {
+        try {
+          const url = new URL(firstAnnotation.url);
+          const storedPath = url.pathname;
+          const storedReportMatch = storedPath.match(/\/reports\/([^\/]+)/);
+          const storedReportId = storedReportMatch ? storedReportMatch[1] : storedPath;
+          return storedReportId === currentReportId;
+        } catch (e) {
+          // If URL parsing fails, include the page
+          return true;
+        }
+      }
+      return true;
+    })
     .map(key => {
       const pageAnnotations = allAnnotationsCache[key];
       // Get page name from stored annotation data (more reliable than URL parsing)
@@ -2481,6 +2516,30 @@ function loadAnnotations() {
     renderComments();
     renderPageList();
   });
+}
+
+// Extract report ID from Power BI URL
+function getReportId() {
+  // Power BI URL format: /groups/{workspace}/reports/{reportId}/ReportSection...
+  // or: /reportEmbed?reportId={reportId}
+  const pathname = window.location.pathname;
+  const search = window.location.search;
+  
+  // Try to extract from path
+  const pathMatch = pathname.match(/\/reports\/([^\/]+)/);
+  if (pathMatch) {
+    return pathMatch[1];
+  }
+  
+  // Try to extract from query params
+  const searchParams = new URLSearchParams(search);
+  const reportId = searchParams.get('reportId');
+  if (reportId) {
+    return reportId;
+  }
+  
+  // Fallback: use full pathname as report ID
+  return pathname.split('/').filter(p => p).join('_');
 }
 
 // Get unique key for current page [Fix #5] - includes query params for Power BI page navigation
