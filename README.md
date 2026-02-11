@@ -10,6 +10,10 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 
 - **5 Drawing Tools** - Rectangle, Arrow, Circle, Line, Freehand
 - **Color Picker** - Choose any color for annotations
+- **Global Numbering** - Annotations numbered sequentially across all pages (1, 2, 3...)
+- **Report Scoping** - Annotations automatically scoped per report, switch between reports seamlessly
+- **Continuous Mode** - Navigate between pages without stopping annotation mode
+- **Page Ordering** - Sidebar pages match your Power BI report order
 - **Sidebar Comments** - All annotations in one organized view with auto-numbering
 - **Export to PDF** - HTML with embedded screenshot, print to PDF
 - **Export to PowerPoint** - Direct .pptx download (opens in PowerPoint/Google Slides)
@@ -37,6 +41,8 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 2. Click the **💬 button** on the right side
 3. Click **Start Annotating** and select a tool + color
 4. Click and drag to draw, then add your comment (Ctrl+Enter to submit)
+5. Navigate between pages freely - annotation mode stays on!
+6. Annotations are numbered globally across all pages (Page 1: #1-3, Page 2: #4-6, etc.)
 
 ### Managing Comments
 
@@ -69,6 +75,7 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 - For PDF/PowerPoint export, you **must click the extension icon** when prompted (this grants screenshot permission)
 - If you just reloaded/updated the extension, **refresh the page** before exporting
 - Export captures only the visible viewport - scroll to include off-screen content
+- **Current Limitation:** When exporting "All Pages", only the current page screenshot is captured. Other pages will show "No screenshot available". Visit each page before exporting to cache screenshots.
 
 ---
 
@@ -99,6 +106,7 @@ powerbi-annotator/
 | Extension doesn't appear | Refresh page (F5), check it's enabled at `chrome://extensions` |
 | Can't see 💬 button | Must be on app.powerbi.com, try scrolling, check for conflicting extensions |
 | Annotations not saving | Check Chrome storage permissions, reinstall extension |
+| Annotations from different report appearing | Each report is scoped separately - this shouldn't happen. Try refreshing the page. |
 | "Extension context invalidated" error | You reloaded the extension - **refresh the page (F5)** before exporting |
 | "Message port closed" error | Extension communication issue - **refresh the page** and try again |
 | Screenshot capture failed | Reload extension at `chrome://extensions` (click 🔄), then refresh the page |
@@ -118,7 +126,24 @@ All data stored locally in Chrome. No external servers, no tracking.
 
 ---
 
+## TODO / Future Enhancements
+
+- [ ] **Multi-page Export Automation** - Automatically navigate and capture screenshots for all annotated pages during "Export All Pages"
+- [ ] Batch annotation features (apply same comment to multiple areas)
+- [ ] Annotation templates and saved colors
+- [ ] Export customization (page size, layout options)
+- [ ] Screenshot quality settings
+
+---
+
 ## Version History
+
+**1.1.0** - Enhanced multi-page workflow
+- Global annotation numbering across all pages
+- Report-scoped annotations (separate per report)
+- Continuous annotation mode (navigate without stopping)
+- Pages in sidebar match report order
+- Fixed annotations appearing on wrong pages
 
 **1.0.0** - Initial release with 5 drawing tools, direct PowerPoint export, direct PDF export, CSV export, activeTab screenshot flow, and organized structure
 
