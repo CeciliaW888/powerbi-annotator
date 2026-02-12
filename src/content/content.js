@@ -1,5 +1,10 @@
 // Power BI Annotator - Content Script
 // This script runs on Power BI pages and adds annotation functionality
+//
+// Page Name Detection:
+// Uses Power BI embed API (powerbi.embeds) for reliable page name detection across
+// different Power BI layouts (app vs workspace). Falls back to DOM selectors and URL parsing
+// if the embed API is not available. Page names are cached for consistency.
 
 let isAnnotationMode = false;
 let annotations = [];
@@ -12,8 +17,9 @@ let freehandPoints = [];
 let allAnnotationsCache = null; // [Fix #4] Cache to avoid read-modify-write race
 let annotationIdCounter = 0; // [Fix #11] Counter to avoid Date.now() collisions
 let lastPageKey = null; // Track current page key for SPA navigation detection
-let lastReportId = null; // Track current report ID to detect report switches
+let lastReportId = null; // Track current report ID to detect report changes
 let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
+let pageNameCache = {}; // { pageKey: displayName } - page names from Power BI API
 
 // --- Custom Modal Helpers (Fix #8: replace blocking prompt/alert/confirm) ---
 
@@ -141,30 +147,48 @@ function generateAnnotationId() {
  * Counts all annotations on pages that come before this page in report order.
  */
 function getGlobalStartNumber() {
-  if (!allAnnotationsCache) return 0;
+  if (!allAnnotationsCache) {
+    console.log('[Global Numbering] No annotations cache');
+    return 0;
+  }
   
   const currentPageName = getPageName();
   const reportPageOrder = getReportPageOrder();
   
+  console.log('[Global Numbering] Current page:', currentPageName);
+  console.log('[Global Numbering] Report page order:', reportPageOrder);
+  
   // If we can't determine report order, fall back to 0
-  if (reportPageOrder.length === 0) return 0;
+  if (reportPageOrder.length === 0) {
+    console.log('[Global Numbering] No report page order detected, returning 0');
+    return 0;
+  }
   
   // Find current page index in report order
   const currentPageIndex = reportPageOrder.indexOf(currentPageName);
-  if (currentPageIndex === -1) return 0; // Page not found in order
+  console.log('[Global Numbering] Current page index in report order:', currentPageIndex);
+  
+  if (currentPageIndex === -1) {
+    console.log('[Global Numbering] Current page not found in report order, returning 0');
+    return 0;
+  }
   
   // Count annotations on all pages that come before this page in report order
   let startNumber = 0;
   const pages = getAnnotatedPages();
   
+  console.log('[Global Numbering] Annotated pages:', pages.map(p => ({ name: p.name, count: p.count })));
+  
   for (const page of pages) {
     const pageIndex = reportPageOrder.indexOf(page.name);
     // Only count pages that come before the current page
     if (pageIndex !== -1 && pageIndex < currentPageIndex) {
+      console.log(`[Global Numbering] Adding ${page.count} from "${page.name}" (index ${pageIndex})`);
       startNumber += page.count;
     }
   }
   
+  console.log('[Global Numbering] Final start number:', startNumber);
   return startNumber;
 }
 
@@ -201,6 +225,38 @@ function allAnnotationsInViewport() {
   });
 }
 
+
+// --- Power BI Embed API Integration ---
+// Inject a script into the page context to access the Power BI JS API (powerbi-client).
+// Content scripts run in an isolated world and cannot access page JS variables directly,
+// so we inject a <script> that reads powerbi.embeds and posts page info back via postMessage.
+// This provides reliable page name detection across different Power BI layouts (app vs workspace).
+
+function injectPowerBIPageScript() {
+  const script = document.createElement('script');
+  // Use external script to avoid CSP inline script violations
+  script.src = chrome.runtime.getURL('src/content/powerbi-page-script.js');
+  (document.head || document.documentElement).appendChild(script);
+}
+
+// Listen for page info messages from the injected script
+window.addEventListener('message', function(event) {
+  if (event.source !== window) return;
+  if (!event.data || event.data.type !== '__pbi_annotator_page_info__') return;
+
+  const { displayName, url } = event.data;
+  if (displayName && url) {
+    console.log('[Annotator] Received page name from embed API:', displayName, 'for', url);
+    
+    pageNameCache[url] = displayName;
+    // Persist to storage so non-current pages retain their names
+    chrome.storage.local.set({ pageNameCache });
+    
+    // Update the sidebar if it's showing
+    renderPageList();
+  }
+});
+
 // --- Main Extension Logic ---
 
 // Initialize the extension
@@ -208,10 +264,12 @@ function init() {
   createSidebar();
   loadAnnotations();
   loadScreenshotCache();
+  loadPageNameCache();
   setupEventListeners();
   lastPageKey = getPageKey();
   lastReportId = getReportId();
   startNavigationWatcher();
+  injectPowerBIPageScript();
   console.log("Power BI Annotator initialized");
 }
 
@@ -322,6 +380,10 @@ function onPageChanged(oldKey, newKey) {
 
   lastPageKey = newKey;
   
+  // Trigger Power BI embed API to update page name cache immediately
+  // This ensures we get the correct page name even before the next poll cycle
+  window.postMessage({ type: '__pbi_annotator_request_page_info__' }, '*');
+  
   // Wait for Power BI to update the DOM before getting the page name
   // Power BI updates the page title/navigation after URL change, not instantly
   setTimeout(() => {
@@ -363,6 +425,14 @@ function loadScreenshotCache() {
   chrome.storage.local.get(['screenshotCache'], (result) => {
     if (!chrome.runtime.lastError && result.screenshotCache) {
       screenshotCache = result.screenshotCache;
+    }
+  });
+}
+// Load cached page names from storage (persisted from Power BI embed API)
+function loadPageNameCache() {
+  chrome.storage.local.get(['pageNameCache'], (result) => {
+    if (!chrome.runtime.lastError && result.pageNameCache) {
+      pageNameCache = result.pageNameCache;
     }
   });
 }
@@ -908,8 +978,11 @@ function renderComments() {
 function getReportPageOrder() {
   const pageOrder = [];
   
+  console.log('[Page Order] Starting page order detection...');
+  
   // Try to find all page navigation buttons in order
   const navigationSelectors = [
+    'div[role="link"][aria-label]',
     'button[role="tab"][aria-label]',
     '.navigationPane button[aria-label]',
     'button[aria-label*="Page"]',
@@ -919,9 +992,32 @@ function getReportPageOrder() {
   
   for (const selector of navigationSelectors) {
     const buttons = document.querySelectorAll(selector);
+    console.log(`[Page Order] Selector "${selector}" found ${buttons.length} elements`);
+    
     if (buttons.length > 0) {
-      buttons.forEach(btn => {
-        const pageName = btn.getAttribute('aria-label') || btn.getAttribute('title') || btn.textContent?.trim();
+      buttons.forEach((btn, idx) => {
+        let pageName = btn.getAttribute('aria-label');
+        
+        // If no aria-label, try title attribute
+        if (!pageName) {
+          pageName = btn.getAttribute('title');
+        }
+        
+        // If still not found, try inner span
+        if (!pageName) {
+          const innerSpan = btn.querySelector('span[title]');
+          if (innerSpan) {
+            pageName = innerSpan.getAttribute('title') || innerSpan.textContent?.trim();
+          }
+        }
+        
+        // Fallback to textContent
+        if (!pageName) {
+          pageName = btn.textContent?.trim();
+        }
+        
+        console.log(`[Page Order]   Element ${idx}: aria-label="${btn.getAttribute('aria-label')}", extracted="${pageName}"`);
+        
         if (pageName && pageName !== 'Page navigation' && !pageName.includes('navigation')) {
           // Clean up the name
           const cleanName = pageName
@@ -929,16 +1025,76 @@ function getReportPageOrder() {
             .replace(/[,\s]+active$/i, '')
             .replace(/^Page\s+/i, '')
             .trim();
+          console.log(`[Page Order]     Cleaned name: "${cleanName}"`);
           if (cleanName && !pageOrder.includes(cleanName)) {
             pageOrder.push(cleanName);
           }
         }
       });
-      if (pageOrder.length > 0) break;
+      if (pageOrder.length > 0) {
+        console.log(`[Page Order] Found ${pageOrder.length} pages with selector "${selector}"`);
+        break;
+      }
     }
   }
   
+  console.log('[Page Order] Final page order:', pageOrder);
   return pageOrder;
+}
+
+// Scan all page navigation elements and cache their names for future use
+// This helps display correct names for pages that have annotations but haven't been visited yet
+function cacheAllPageNames() {
+  console.log('[Page Name Cache] Scanning navigation for all page names...');
+  
+  const navigationSelectors = [
+    'div[role="link"][aria-label]',
+    'button[role="tab"][aria-label]',
+    '.navigationPane button[aria-label]'
+  ];
+  
+  for (const selector of navigationSelectors) {
+    const elements = document.querySelectorAll(selector);
+    
+    if (elements.length > 0) {
+      elements.forEach((element, idx) => {
+        let pageName = element.getAttribute('aria-label');
+        
+        // If no aria-label, try other methods
+        if (!pageName) {
+          const innerSpan = element.querySelector('span[title]');
+          if (innerSpan) {
+            pageName = innerSpan.getAttribute('title') || innerSpan.textContent?.trim();
+          }
+        }
+        
+        if (pageName && pageName !== 'Page navigation') {
+          // Clean up the name
+          const cleanName = pageName
+            .replace(/[,\s]+selected$/i, '')
+            .replace(/[,\s]+active$/i, '')
+            .replace(/^Page\s+/i, '')
+            .trim();
+          
+          // Try to find the URL this page corresponds to by looking at data attributes or href
+          // Power BI doesn't expose direct URLs, but we can infer from ReportSection patterns
+          const parentElement = element.closest('[data-testid]') || element;
+          
+          console.log(`[Page Name Cache]   Found page: "${cleanName}"`);
+          
+          // Store in a temporary lookup that we can use when matching pages
+          // We'll match by name when we can't get URL
+          if (!window._pbiPageNameLookup) {
+            window._pbiPageNameLookup = {};
+          }
+          window._pbiPageNameLookup[cleanName] = true;
+        }
+      });
+      
+      console.log(`[Page Name Cache] Cached ${elements.length} page names from "${selector}"`);
+      break;
+    }
+  }
 }
 
 // Get list of all pages that have annotations in the current report
@@ -970,26 +1126,40 @@ function getAnnotatedPages() {
     })
     .map(key => {
       const pageAnnotations = allAnnotationsCache[key];
-      // Get page name from stored annotation data (more reliable than URL parsing)
       let name = key;
+      
       if (pageAnnotations.length > 0) {
-        // Use stored pageName from first annotation if available
-        if (pageAnnotations[0].pageName) {
-          name = pageAnnotations[0].pageName;
-        } else if (key === currentKey) {
-          // Fallback: use getPageName() only for current page
+        // PRIORITY 1: For current page, always use live getPageName() (most accurate)
+        if (key === currentKey) {
           name = getPageName();
-        } else {
-          // Fallback: try to extract from URL
+        } 
+        // PRIORITY 2: Check pageNameCache for this URL (populated by DOM detection)
+        else if (pageAnnotations[0].url && pageNameCache[pageAnnotations[0].url]) {
+          name = pageNameCache[pageAnnotations[0].url];
+        }
+        // PRIORITY 3: Use stored pageName, but skip if it looks like a ReportSection hash
+        else if (pageAnnotations[0].pageName) {
+          const storedName = pageAnnotations[0].pageName;
+          // Skip cryptic ReportSection hashes (32 hex chars)
+          if (!/^[a-f0-9]{20,32}$/i.test(storedName)) {
+            name = storedName;
+          }
+        }
+        
+        // If we still have a cryptic name, try to extract URL from the page key
+        if (/^[a-f0-9]{20,32}$/i.test(name) || name === key) {
           try {
             const url = new URL(pageAnnotations[0].url || '');
-            const parts = url.pathname.split('/').filter(p => p);
-            name = parts.length > 0 ? decodeURIComponent(parts[parts.length - 1]) : key;
+            // Try to get from pageNameCache using the URL
+            if (pageNameCache[url.pathname + url.search]) {
+              name = pageNameCache[url.pathname + url.search];
+            }
           } catch (e) {
-            name = key;
+            // Keep the key as fallback
           }
         }
       }
+      
       return {
         key,
         name,
@@ -1030,6 +1200,9 @@ function renderPageList() {
   const pageList = document.getElementById('pbi-page-list');
 
   if (!pageNameEl || !countBadge || !pageList) return;
+
+  // Cache all page names from navigation before rendering
+  cacheAllPageNames();
 
   const pages = getAnnotatedPages();
   const currentPageName = getPageName();
@@ -2278,9 +2451,21 @@ async function cropScreenshotToCanvas(screenshotDataUrl, canvasElement) {
 }
 
 function getPageName() {
-  // Try to get the active page name from Power BI's Pages panel
+  const currentUrl = window.location.pathname + window.location.search;
+  
+  // PRIORITY 1: Use Power BI embed API cached page name (most reliable)
+  if (pageNameCache[currentUrl]) {
+    console.log('[getPageName] Using cached name:', pageNameCache[currentUrl]);
+    return pageNameCache[currentUrl];
+  }
+
+  console.log('[getPageName] No cached name, attempting detection for URL:', currentUrl);
+
+  // PRIORITY 2: Try to get the active page name from Power BI's Pages panel
   // Look for the selected/active page in the navigation pane
   const activePageSelectors = [
+    'div[role="link"][current="page"][aria-label]',
+    'div[role="link"][current="page"]',
     'button[aria-selected="true"][aria-label]',
     'button[aria-selected="true"][title]',
     '.navigationPane .active button[title]',
@@ -2297,40 +2482,81 @@ function getPageName() {
     if (element) {
       // Try aria-label first (works when navigation is collapsed)
       let pageName = element.getAttribute('aria-label') || 
-                      element.getAttribute('title') || 
-                      element.textContent?.trim();
+                      element.getAttribute('title');
+      
+      // If not found, try getting from inner span
+      if (!pageName) {
+        const innerSpan = element.querySelector('span[title]');
+        if (innerSpan) {
+          pageName = innerSpan.getAttribute('title') || innerSpan.textContent?.trim();
+        }
+      }
+      
+      // Fallback to textContent
+      if (!pageName) {
+        pageName = element.textContent?.trim();
+      }
+      
+      console.log(`[getPageName] Selector "${selector}" found:`, pageName);
       
       if (pageName && pageName !== 'Page navigation') {
         // Clean up common suffixes from Power BI
         pageName = pageName
           .replace(/[,\s]+selected$/i, '')
           .replace(/[,\s]+active$/i, '')
+          .replace(/^Page\s+/i, '')
           .trim();
         
         if (pageName) {
+          console.log('[getPageName] Using DOM selector result:', pageName);
+          // Cache this name for future use
+          pageNameCache[currentUrl] = pageName;
+          chrome.storage.local.set({ pageNameCache });
           return pageName;
         }
       }
     }
   }
 
-  // Fallback: Try to get from document title (remove " - Power BI" suffix)
+  console.log('[getPageName] DOM selectors failed, falling back to URL parsing');
+
+  // PRIORITY 3: Extract page name from URL query parameters
+  // Power BI uses pageName parameter in URLs
+  const urlParams = new URLSearchParams(window.location.search);
+  const pageNameParam = urlParams.get('pageName');
+  if (pageNameParam) {
+    const decodedPageName = decodeURIComponent(pageNameParam);
+    console.log('[getPageName] Using URL parameter pageName:', decodedPageName);
+    pageNameCache[currentUrl] = decodedPageName;
+    chrome.storage.local.set({ pageNameCache });
+    return decodedPageName;
+  }
+
+  // PRIORITY 4: Use URL path section name (ReportSection)
+  const path = window.location.pathname;
+  const sectionMatch = path.match(/ReportSection([^\/]*)/);
+  if (sectionMatch && sectionMatch[1]) {
+    const sectionName = decodeURIComponent(sectionMatch[1]);
+    console.log('[getPageName] Using URL section name:', sectionName);
+    pageNameCache[currentUrl] = sectionName;
+    chrome.storage.local.set({ pageNameCache });
+    return sectionName;
+  }
+
+  // PRIORITY 5: Get from document title (but this is usually just the report name, not page name)
+  // Only use if it's not too generic
   if (document.title) {
     const cleanTitle = document.title.replace(/ - Power BI.*$/i, '').trim();
+    console.log('[getPageName] Document title fallback:', cleanTitle);
+    // Don't cache document.title as it's likely the report name, not page name
+    // and might be the same for all pages
     if (cleanTitle && cleanTitle.length > 5) {
       return cleanTitle;
     }
   }
 
-  // Otherwise use URL path
-  const path = window.location.pathname;
-  const parts = path.split("/").filter((p) => p);
-
-  if (parts.length > 0) {
-    return parts[parts.length - 1];
-  }
-
-  return 'Power BI Report';
+  console.log('[getPageName] All detection methods failed, using generic name');
+  return 'Power BI Page';
 }
 
 // Create annotation element from annotation data

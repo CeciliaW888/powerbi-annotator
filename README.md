@@ -14,10 +14,11 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 - **Report Scoping** - Annotations automatically scoped per report, switch between reports seamlessly
 - **Continuous Mode** - Navigate between pages without stopping annotation mode
 - **Page Ordering** - Sidebar pages match your Power BI report order
+- **Power BI Embed API Integration** - Reliable page detection using Power BI's native embed API
 - **Sidebar Comments** - All annotations in one organized view with auto-numbering
 - **Export to PDF** - HTML with embedded screenshot, print to PDF
 - **Export to PowerPoint** - Direct .pptx download (opens in PowerPoint/Google Slides)
-- **Export CSV** - Excel/CSV spreadsheet with matching numbers (#1 in PDF/PPT = Row 1 in CSV)
+- **Export to Excel** - Excel spreadsheet with clickable hyperlinks to navigate between pages
 - **Auto-Save** - Annotations persist across sessions
 - **Viewport Warning** - Alerts if annotations are off-screen before export
 
@@ -66,10 +67,11 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 4. Wait for the `.pptx` file to download directly
 5. Open in PowerPoint or Google Slides
 
-**Export CSV (Excel):**
-1. Click **Export CSV**
-2. CSV downloads automatically (no icon click needed)
+**Export to Excel:**
+1. Click **Export Excel**
+2. Excel file downloads automatically (no icon click needed)
 3. Open in Excel - numbers match PDF/PPT annotations (#1, #2, etc.)
+4. Page names are **clickable hyperlinks** - click to navigate directly to that page in Power BI
 
 **Important Notes:**
 - For PDF/PowerPoint export, you **must click the extension icon** when prompted (this grants screenshot permission)
@@ -83,18 +85,20 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 
 ```
 powerbi-annotator/
-├── assets/icons/              # Extension icons
+├── assets/icons/                  # Extension icons
 ├── src/
 │   ├── background/
-│   │   └── background.js      # Background worker
+│   │   └── background.js          # Background worker
 │   ├── content/
-│   │   ├── content.css        # Styles
-│   │   └── content.js         # Main logic
+│   │   ├── content.css            # Styles
+│   │   ├── content.js             # Main logic
+│   │   └── powerbi-page-script.js # Power BI Embed API integration (page context)
 │   └── lib/
-│       ├── jspdf.umd.min.js   # jsPDF library for .pdf export
-│       └── pptxgen.bundle.js  # PptxGenJS library for .pptx export
-├── manifest.json              # Extension config
-└── README.md                  # Documentation
+│       ├── jspdf.umd.min.js       # jsPDF library for .pdf export
+│       ├── pptxgen.bundle.js      # PptxGenJS library for .pptx export
+│       └── xlsx.full.min.js       # SheetJS library for .xlsx export
+├── manifest.json                  # Extension config
+└── README.md                      # Documentation
 ```
 
 ---
@@ -136,7 +140,16 @@ All data stored locally in Chrome. No external servers, no tracking.
 
 ---
 
-## Version History
+## V2.0** - Power BI Embed API Integration & Excel Export
+- Integrated Power BI Embed API for reliable page detection
+- Added page context script (powerbi-page-script.js) for native API access
+- Changed CSV export to Excel (.xlsx) format
+- Added clickable hyperlinks in Excel export for page navigation
+- Fixed global annotation numbering across pages
+- Improved UX and page change detection
+- Enhanced compatibility across all Power BI report types
+
+**1.ersion History
 
 **1.1.0** - Enhanced multi-page workflow
 - Global annotation numbering across all pages

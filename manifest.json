@@ -33,6 +33,12 @@
   "background": {
     "service_worker": "src/background/background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/content/powerbi-page-script.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "icons": {
     "16": "assets/icons/icon16.png",
     "48": "assets/icons/icon48.png",
