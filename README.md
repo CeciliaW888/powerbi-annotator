@@ -10,17 +10,15 @@ Chrome extension for annotating Power BI reports with drawings, comments, and pr
 
 - **5 Drawing Tools** - Rectangle, Arrow, Circle, Line, Freehand
 - **Color Picker** - Choose any color for annotations
-- **Global Numbering** - Annotations numbered sequentially across all pages (1, 2, 3...)
-- **Report Scoping** - Annotations automatically scoped per report, switch between reports seamlessly
-- **Continuous Mode** - Navigate between pages without stopping annotation mode
-- **Page Ordering** - Sidebar pages match your Power BI report order
-- **Power BI Embed API Integration** - Reliable page detection using Power BI's native embed API
-- **Sidebar Comments** - All annotations in one organized view with auto-numbering
-- **Export to PDF** - HTML with embedded screenshot, print to PDF
-- **Export to PowerPoint** - Direct .pptx download (opens in PowerPoint/Google Slides)
-- **Export to Excel** - Excel spreadsheet with clickable hyperlinks to navigate between pages
-- **Auto-Save** - Annotations persist across sessions
-- **Viewport Warning** - Alerts if annotations are off-screen before export
+- **Smart Numbering** - Annotations numbered across all pages (1, 2, 3...)
+- **Multi-Report Support** - Switch between different reports seamlessly
+- **Continuous Mode** - Navigate between pages without interruption
+- **Organized Sidebar** - All annotations in one view with page grouping
+- **Export to PDF** - Download annotated reports as PDF files
+- **Export to PowerPoint** - Download as .pptx for presentations
+- **Export to Excel** - Spreadsheet with clickable links to jump between pages
+- **Auto-Save** - Your work is saved automatically
+- **Smart Warnings** - Alerts if annotations are off-screen before export
 
 ---
 
@@ -140,25 +138,11 @@ All data stored locally in Chrome. No external servers, no tracking.
 
 ---
 
-## V2.0** - Power BI Embed API Integration & Excel Export
-- Integrated Power BI Embed API for reliable page detection
-- Added page context script (powerbi-page-script.js) for native API access
-- Changed CSV export to Excel (.xlsx) format
-- Added clickable hyperlinks in Excel export for page navigation
-- Fixed global annotation numbering across pages
-- Improved UX and page change detection
-- Enhanced compatibility across all Power BI report types
+## Version History
 
-**1.ersion History
-
-**1.1.0** - Enhanced multi-page workflow
-- Global annotation numbering across all pages
-- Report-scoped annotations (separate per report)
-- Continuous annotation mode (navigate without stopping)
-- Pages in sidebar match report order
-- Fixed annotations appearing on wrong pages
-
-**1.0.0** - Initial release with 5 drawing tools, direct PowerPoint export, direct PDF export, CSV export, activeTab screenshot flow, and organized structure
+**v1.2** - Excel export with clickable links, improved page detection, better multi-page support  
+**v1.1** - Smart numbering across pages, continuous annotation mode  
+**v1.0** - Initial release
 
 ---
 
