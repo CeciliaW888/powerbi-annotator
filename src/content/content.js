@@ -434,7 +434,7 @@ function createSidebar() {
           \ud83d\udcf8 Export Pages
         </button>
         <button id="pbi-export-annotations" class="pbi-btn pbi-btn-success">
-          \ud83d\udcca Export CSV
+          \ud83d\udcca Export Excel
         </button>
       </div>
       <div class="pbi-button-row">
@@ -502,7 +502,7 @@ function setupEventListeners() {
     .getElementById("pbi-export-pages")
     .addEventListener("click", exportPages);
 
-  // Export Annotations (Excel/CSV)
+  // Export Annotations (Excel)
   document
     .getElementById("pbi-export-annotations")
     .addEventListener("click", exportAnnotations);
@@ -1201,10 +1201,10 @@ function showScopeDialog() {
   });
 }
 
-// Build CSV rows for a set of pages (used by both single and multi-page export)
-function buildCsvRows(pages) {
+// Build Excel data for a set of pages (used by both single and multi-page export)
+function buildExcelData(pages) {
   const headers = ["No", "Page Name", "Date", "Comment"];
-  const allRows = [];
+  const data = [headers];
   let globalNumber = 1;
 
   for (const page of pages) {
@@ -1216,39 +1216,20 @@ function buildCsvRows(pages) {
     
     for (const annotation of page.annotations) {
       const date = new Date(annotation.timestamp);
-      // Create Excel hyperlink formula for page name if URL exists
-      const pageName = pageUrl ? `=HYPERLINK("${pageUrl}","${page.name.replace(/"/g, '""')}")` : page.name;
       
-      allRows.push([
+      data.push([
         globalNumber++,
-        pageName,
+        { text: page.name, hyperlink: pageUrl }, // SheetJS hyperlink format
         date.toLocaleDateString(),
         annotation.comment,
       ]);
     }
   }
 
-  return [
-    headers.join(","),
-    ...allRows.map((row) =>
-      row
-        .map((cell) => {
-          const cellStr = String(cell);
-          // Don't escape Excel formulas (cells starting with =)
-          if (cellStr.startsWith('=')) {
-            return cellStr;
-          }
-          if (cellStr.includes(",") || cellStr.includes('"') || cellStr.includes("\n")) {
-            return `"${cellStr.replace(/"/g, '""')}"`;
-          }
-          return cellStr;
-        })
-        .join(","),
-    ),
-  ].join("\n");
+  return data;
 }
 
-// Export annotations to Excel (CSV format) [Fix #8, #10]
+// Export annotations to Excel (.xlsx format) [Fix #8, #10]
 async function exportAnnotations() {
   if (annotations.length === 0) {
     await showModal("No comments to export. Create some annotations first!");
@@ -1263,31 +1244,46 @@ async function exportAnnotations() {
   if (scope === 'all') {
     pages = getAnnotatedPages().map(p => ({
       name: p.name,
+      key: p.key,
       annotations: allAnnotationsCache[p.key] || []
     }));
   } else {
-    pages = [{ name: getPageName(), annotations }];
+    pages = [{ name: getPageName(), key: getPageKey(), annotations }];
   }
 
   const totalCount = pages.reduce((sum, p) => sum + p.annotations.length, 0);
-  const csvContent = buildCsvRows(pages);
+  const excelData = buildExcelData(pages);
 
-  // Create blob and download
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const link = document.createElement("a");
-  const url = URL.createObjectURL(blob);
+  // Create workbook and worksheet using SheetJS
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(excelData);
 
+  // Apply hyperlinks to the Page Name column (column B, index 1)
+  for (let i = 1; i < excelData.length; i++) { // Start from 1 to skip header
+    const cellRef = XLSX.utils.encode_cell({ r: i, c: 1 }); // Column B (index 1)
+    const cellData = excelData[i][1];
+    if (cellData && cellData.hyperlink) {
+      ws[cellRef].l = { Target: cellData.hyperlink, Tooltip: cellData.hyperlink };
+      ws[cellRef].v = cellData.text;
+    }
+  }
+
+  // Set column widths
+  ws['!cols'] = [
+    { wch: 6 },  // No
+    { wch: 30 }, // Page Name
+    { wch: 12 }, // Date
+    { wch: 60 }  // Comment
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, "Annotations");
+
+  // Generate and download the Excel file
   const now = new Date();
   const suffix = scope === 'all' ? 'AllPages' : 'Comments';
-  const filename = `PowerBI_${suffix}_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.csv`;
+  const filename = `PowerBI_${suffix}_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.xlsx`;
 
-  link.setAttribute("href", url);
-  link.setAttribute("download", filename);
-  link.style.visibility = "hidden";
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url); // [Fix #10] Prevent memory leak
+  XLSX.writeFile(wb, filename);
 
   const pageLabel = scope === 'all' ? ` across ${pages.length} page(s)` : '';
   await showModal(`Exported ${totalCount} comment(s)${pageLabel} to ${filename}`);
