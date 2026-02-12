@@ -143,19 +143,26 @@ function generateAnnotationId() {
 function getGlobalStartNumber() {
   if (!allAnnotationsCache) return 0;
   
-  const currentKey = getPageKey();
   const currentPageName = getPageName();
   const reportPageOrder = getReportPageOrder();
+  
+  // If we can't determine report order, fall back to 0
+  if (reportPageOrder.length === 0) return 0;
+  
+  // Find current page index in report order
+  const currentPageIndex = reportPageOrder.indexOf(currentPageName);
+  if (currentPageIndex === -1) return 0; // Page not found in order
+  
+  // Count annotations on all pages that come before this page in report order
+  let startNumber = 0;
   const pages = getAnnotatedPages();
   
-  let startNumber = 0;
-  
-  // Find current page in the ordered list and count all annotations before it
   for (const page of pages) {
-    if (page.key === currentKey || page.name === currentPageName) {
-      break;
+    const pageIndex = reportPageOrder.indexOf(page.name);
+    // Only count pages that come before the current page
+    if (pageIndex !== -1 && pageIndex < currentPageIndex) {
+      startNumber += page.count;
     }
-    startNumber += page.count;
   }
   
   return startNumber;
