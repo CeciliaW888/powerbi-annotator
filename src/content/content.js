@@ -1201,11 +1201,20 @@ function buildCsvRows(pages) {
   let globalNumber = 1;
 
   for (const page of pages) {
+    // Extract full URL from page key or first annotation
+    let pageUrl = page.key || '';
+    if (page.annotations && page.annotations.length > 0 && page.annotations[0].url) {
+      pageUrl = page.annotations[0].url;
+    }
+    
     for (const annotation of page.annotations) {
       const date = new Date(annotation.timestamp);
+      // Create Excel hyperlink formula for page name if URL exists
+      const pageName = pageUrl ? `=HYPERLINK("${pageUrl}","${page.name.replace(/"/g, '""')}")` : page.name;
+      
       allRows.push([
         globalNumber++,
-        page.name,
+        pageName,
         date.toLocaleDateString(),
         annotation.comment,
       ]);
@@ -1218,6 +1227,10 @@ function buildCsvRows(pages) {
       row
         .map((cell) => {
           const cellStr = String(cell);
+          // Don't escape Excel formulas (cells starting with =)
+          if (cellStr.startsWith('=')) {
+            return cellStr;
+          }
           if (cellStr.includes(",") || cellStr.includes('"') || cellStr.includes("\n")) {
             return `"${cellStr.replace(/"/g, '""')}"`;
           }
