@@ -13,6 +13,7 @@ let allAnnotationsCache = null; // [Fix #4] Cache to avoid read-modify-write rac
 let annotationIdCounter = 0; // [Fix #11] Counter to avoid Date.now() collisions
 let lastPageKey = null; // Track current page key for SPA navigation detection
 let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
+let pageNameCache = {}; // { pageKey: displayName } - page names from Power BI API
 
 // --- Custom Modal Helpers (Fix #8: replace blocking prompt/alert/confirm) ---
 
@@ -167,6 +168,65 @@ function allAnnotationsInViewport() {
   });
 }
 
+// --- Power BI Embed API Integration ---
+// Inject a script into the page context to access the Power BI JS API (powerbi-client).
+// Content scripts run in an isolated world and cannot access page JS variables directly,
+// so we inject a <script> that reads powerbi.embeds and posts page info back via postMessage.
+
+function injectPowerBIPageScript() {
+  const script = document.createElement('script');
+  script.textContent = `
+    (function() {
+      var PBI_MSG_TYPE = '__pbi_annotator_page_info__';
+      var lastSentUrl = '';
+      var lastSentName = '';
+
+      function getActivePageInfo() {
+        try {
+          if (typeof powerbi === 'undefined' || !powerbi.embeds || powerbi.embeds.length === 0) return;
+          var report = powerbi.embeds[0];
+          if (!report || typeof report.getActivePage !== 'function') return;
+          var currentUrl = window.location.pathname + window.location.search;
+          report.getActivePage().then(function(page) {
+            if (page && page.displayName && (page.displayName !== lastSentName || currentUrl !== lastSentUrl)) {
+              lastSentName = page.displayName;
+              lastSentUrl = currentUrl;
+              window.postMessage({
+                type: PBI_MSG_TYPE,
+                displayName: page.displayName,
+                name: page.name,
+                url: currentUrl
+              }, '*');
+            }
+          }).catch(function() {});
+        } catch (e) {}
+      }
+
+      // Poll periodically — Power BI may take time to initialize embeds
+      setInterval(getActivePageInfo, 1000);
+      // Also try immediately
+      getActivePageInfo();
+    })();
+  `;
+  (document.head || document.documentElement).appendChild(script);
+  script.remove(); // Clean up the tag; the code is already executing
+}
+
+// Listen for page info messages from the injected script
+window.addEventListener('message', function(event) {
+  if (event.source !== window) return;
+  if (!event.data || event.data.type !== '__pbi_annotator_page_info__') return;
+
+  const { displayName, url } = event.data;
+  if (displayName && url) {
+    pageNameCache[url] = displayName;
+    // Persist to storage so non-current pages retain their names
+    chrome.storage.local.set({ pageNameCache });
+    // Update the sidebar if it's showing
+    renderPageList();
+  }
+});
+
 // --- Main Extension Logic ---
 
 // Initialize the extension
@@ -174,9 +234,11 @@ function init() {
   createSidebar();
   loadAnnotations();
   loadScreenshotCache();
+  loadPageNameCache();
   setupEventListeners();
   lastPageKey = getPageKey();
   startNavigationWatcher();
+  injectPowerBIPageScript();
   console.log("Power BI Annotator initialized");
 }
 
@@ -257,6 +319,15 @@ function loadScreenshotCache() {
   chrome.storage.local.get(['screenshotCache'], (result) => {
     if (!chrome.runtime.lastError && result.screenshotCache) {
       screenshotCache = result.screenshotCache;
+    }
+  });
+}
+
+// Load cached page names from storage (persisted from Power BI embed API)
+function loadPageNameCache() {
+  chrome.storage.local.get(['pageNameCache'], (result) => {
+    if (!chrome.runtime.lastError && result.pageNameCache) {
+      pageNameCache = result.pageNameCache;
     }
   });
 }
@@ -765,24 +836,9 @@ function getAnnotatedPages() {
   return Object.keys(allAnnotationsCache)
     .filter(key => allAnnotationsCache[key].length > 0)
     .map(key => {
+      // Use getPageName(key) which checks API cache first, then DOM, then fallbacks
+      const name = getPageName(key);
       const pageAnnotations = allAnnotationsCache[key];
-      // Derive page name from the first annotation's stored URL, or from the key
-      let name = key;
-      if (pageAnnotations.length > 0 && pageAnnotations[0].url) {
-        try {
-          const url = new URL(pageAnnotations[0].url);
-          // Try document title pattern first (for current page)
-          if (key === currentKey) {
-            name = getPageName();
-          } else {
-            // Extract a readable name from the URL path
-            const parts = url.pathname.split('/').filter(p => p);
-            name = parts.length > 0 ? decodeURIComponent(parts[parts.length - 1]) : key;
-          }
-        } catch (e) {
-          name = key;
-        }
-      }
       return {
         key,
         name,
@@ -1996,57 +2052,69 @@ async function cropScreenshotToCanvas(screenshotDataUrl, canvasElement) {
   });
 }
 
-function getPageName() {
-  // Try to get the active page name from Power BI's Pages panel
-  // Look for the selected/active page in the navigation pane
-  const activePageSelectors = [
-    'button[aria-selected="true"][aria-label]',
-    'button[aria-selected="true"][title]',
-    '.navigationPane .active button[title]',
-    '.navigationPane .selected button[title]',
-    '.navigationPane button.is-selected[title]',
-    '.pagesNav .active .itemName',
-    'button[role="tab"][aria-selected="true"]',
-    '.navigationPane .itemContainer.active .itemName',
-    'div[role="tablist"] button[aria-selected="true"]'
-  ];
-  
-  for (const selector of activePageSelectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      // Try aria-label first (works when navigation is collapsed)
-      let pageName = element.getAttribute('aria-label') || 
-                      element.getAttribute('title') || 
-                      element.textContent?.trim();
-      
-      if (pageName && pageName !== 'Page navigation') {
-        // Clean up common suffixes from Power BI
-        pageName = pageName
-          .replace(/[,\s]+selected$/i, '')
-          .replace(/[,\s]+active$/i, '')
-          .trim();
-        
-        if (pageName) {
-          return pageName;
+function getPageName(pageKey) {
+  const key = pageKey || getPageKey();
+
+  // Priority 1: Use Power BI Embed API result (most reliable, works for App & Workspace)
+  if (pageNameCache[key]) {
+    return pageNameCache[key];
+  }
+
+  // DOM selectors and title only work for the currently visible page
+  const isCurrentPage = (key === getPageKey());
+
+  if (isCurrentPage) {
+    // Priority 2: Try DOM selectors (fallback for when API hasn't responded yet)
+    // Look for the selected/active page in the navigation pane
+    const activePageSelectors = [
+      'button[aria-selected="true"][aria-label]',
+      'button[aria-selected="true"][title]',
+      '.navigationPane .active button[title]',
+      '.navigationPane .selected button[title]',
+      '.navigationPane button.is-selected[title]',
+      '.pagesNav .active .itemName',
+      'button[role="tab"][aria-selected="true"]',
+      '.navigationPane .itemContainer.active .itemName',
+      'div[role="tablist"] button[aria-selected="true"]'
+    ];
+
+    for (const selector of activePageSelectors) {
+      const element = document.querySelector(selector);
+      if (element) {
+        // Try aria-label first (works when navigation is collapsed)
+        let pageName = element.getAttribute('aria-label') ||
+                        element.getAttribute('title') ||
+                        element.textContent?.trim();
+
+        if (pageName && pageName !== 'Page navigation') {
+          // Clean up common suffixes from Power BI
+          pageName = pageName
+            .replace(/[,\s]+selected$/i, '')
+            .replace(/[,\s]+active$/i, '')
+            .trim();
+
+          if (pageName) {
+            return pageName;
+          }
         }
+      }
+    }
+
+    // Fallback: Try to get from document title (remove " - Power BI" suffix)
+    if (document.title) {
+      const cleanTitle = document.title.replace(/ - Power BI.*$/i, '').trim();
+      if (cleanTitle && cleanTitle.length > 5) {
+        return cleanTitle;
       }
     }
   }
 
-  // Fallback: Try to get from document title (remove " - Power BI" suffix)
-  if (document.title) {
-    const cleanTitle = document.title.replace(/ - Power BI.*$/i, '').trim();
-    if (cleanTitle && cleanTitle.length > 5) {
-      return cleanTitle;
-    }
-  }
-
-  // Otherwise use URL path
-  const path = window.location.pathname;
+  // Fallback for any page: use URL path
+  const path = key.split('?')[0]; // Extract pathname from pageKey
   const parts = path.split("/").filter((p) => p);
 
   if (parts.length > 0) {
-    return parts[parts.length - 1];
+    return decodeURIComponent(parts[parts.length - 1]);
   }
 
   return 'Power BI Report';
