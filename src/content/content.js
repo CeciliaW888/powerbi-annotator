@@ -551,17 +551,30 @@ function toggleAnnotationMode() {
   isAnnotationMode = !isAnnotationMode;
   const btn = document.getElementById("pbi-toggle-annotate");
   const toolbar = document.getElementById("pbi-drawing-toolbar");
+  const sidebar = document.getElementById("pbi-annotator-sidebar");
 
   if (isAnnotationMode) {
     btn.textContent = "\u2713 Annotating (Click & Drag)";
     btn.classList.add("active");
     toolbar.style.display = "flex";
     document.body.style.cursor = "crosshair";
+    
+    // Collapse sidebar to maximize screen space for annotating
+    if (sidebarOpen) {
+      sidebar.classList.remove("open");
+      sidebarOpen = false;
+    }
   } else {
     btn.textContent = "\ud83d\udccd Start Annotating";
     btn.classList.remove("active");
     toolbar.style.display = "none";
     document.body.style.cursor = "default";
+    
+    // Reopen sidebar to show comments
+    if (!sidebarOpen) {
+      sidebar.classList.add("open");
+      sidebarOpen = true;
+    }
   }
 }
 
@@ -1409,16 +1422,9 @@ async function generatePresentation(format) {
     box.style.zIndex = '';
   });
 
-  // Get the Power BI report canvas area
+  // Get the Power BI report canvas area (if on Power BI, otherwise use full viewport)
   const reportCanvas = getReportCanvas();
-  if (!reportCanvas) {
-    sidebar.style.display = '';
-    toggleBtn.style.display = '';
-    if (sidebarWasOpen) sidebar.classList.add('open');
-    await showModal('Could not find Power BI report canvas. Make sure you are on a report page.');
-    return;
-  }
-
+  
   // Wait for rendering
   await new Promise(resolve => setTimeout(resolve, 300));
 
@@ -1450,8 +1456,13 @@ async function generatePresentation(format) {
       return;
     }
     if (result.screenshot) {
-      // Crop screenshot to only the report canvas area
-      screenshot = await cropScreenshotToCanvas(result.screenshot, reportCanvas);
+      // Crop screenshot to only the report canvas area if on Power BI
+      // Otherwise use the full viewport screenshot
+      if (reportCanvas) {
+        screenshot = await cropScreenshotToCanvas(result.screenshot, reportCanvas);
+      } else {
+        screenshot = result.screenshot;
+      }
     } else if (result.error) {
       console.error('Screenshot capture error:', result.error);
     }
