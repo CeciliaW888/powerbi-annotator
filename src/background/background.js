@@ -1,4 +1,4 @@
-// Power BI Annotator - Background Service Worker
+// Web Annotator - Background Service Worker
 
 // This service worker handles extension installation, updates,
 // and screenshot capture via the activeTab permission flow.
@@ -9,14 +9,14 @@ let pendingCapture = null; // { tabId: number } or null
 
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
-    console.log('Power BI Annotator installed');
+    console.log('Web Annotator installed');
 
     // Open a welcome page or show notification
     chrome.tabs.create({
       url: 'https://app.powerbi.com/'
     });
   } else if (details.reason === 'update') {
-    console.log('Power BI Annotator updated');
+    console.log('Web Annotator updated');
   }
 });
 
