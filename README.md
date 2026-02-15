@@ -16,7 +16,7 @@ Chrome extension for annotating websites — originally designed for Power BI re
 - **Organized Sidebar** - All annotations in one view with page grouping
 - **Export to PDF** - Download annotated reports as PDF files
 - **Export to PowerPoint** - Download as .pptx for presentations
-- **Export to Excel** - Spreadsheet with clickable links to jump between pages
+- **Export to Excel** - Spreadsheet with page URLs and annotations
 - **Auto-Save** - Your work is saved automatically
 - **Smart Warnings** - Alerts if annotations are off-screen before export
 
@@ -68,8 +68,9 @@ Chrome extension for annotating websites — originally designed for Power BI re
 **Export to Excel:**
 1. Click **Export Excel**
 2. Excel file downloads automatically (no icon click needed)
-3. Open in Excel - numbers match PDF/PPT annotations (#1, #2, etc.)
-4. Page names are **clickable hyperlinks** - click to navigate directly to that page in Power BI
+3. Open in Excel - includes columns: No, Page Name, URL, Date, Comment
+4. Numbers match PDF/PPT annotations (#1, #2, etc.)
+5. URL column shows the full page URL for easy reference
 
 **Important Notes:**
 - For PDF/PowerPoint export, you **must click the extension icon** when prompted (this grants screenshot permission)
@@ -140,7 +141,7 @@ All data stored locally in Chrome. No external servers, no tracking.
 
 ## Version History
 
-**v1.2** - Excel export with clickable links, improved page detection, better multi-page support  
+**v1.2** - Excel export with page URLs, improved page detection, better multi-page support  
 **v1.1** - Smart numbering across pages, continuous annotation mode  
 **v1.0** - Initial release
 
