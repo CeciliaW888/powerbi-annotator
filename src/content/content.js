@@ -1310,11 +1310,10 @@ function showScopeDialog() {
 }
 
 // Build Excel data for a set of pages (used by both single and multi-page export)
-// Returns { data: string[][], hyperlinks: { row, url }[] } so aoa_to_sheet gets plain values.
+// Returns array of arrays (rows) for aoa_to_sheet
 function buildExcelData(pages) {
-  const headers = ["No", "Page Name", "Date", "Comment"];
+  const headers = ["No", "Page Name", "URL", "Date", "Comment"];
   const data = [headers];
-  const hyperlinks = []; // { row, url } for Page Name column
   let globalNumber = 1;
 
   for (const page of pages) {
@@ -1326,22 +1325,18 @@ function buildExcelData(pages) {
 
     for (const annotation of page.annotations) {
       const date = new Date(annotation.timestamp);
-      const rowIndex = data.length; // current row (0-based)
 
       data.push([
         globalNumber++,
         page.name,
+        pageUrl,
         date.toLocaleDateString(),
         annotation.comment,
       ]);
-
-      if (pageUrl) {
-        hyperlinks.push({ row: rowIndex, url: pageUrl });
-      }
     }
   }
 
-  return { data, hyperlinks };
+  return data;
 }
 
 // Export annotations to Excel (.xlsx format) [Fix #8, #10]
@@ -1367,24 +1362,17 @@ async function exportAnnotations() {
   }
 
   const totalCount = pages.reduce((sum, p) => sum + p.annotations.length, 0);
-  const { data: excelData, hyperlinks } = buildExcelData(pages);
+  const excelData = buildExcelData(pages);
 
   // Create workbook and worksheet using SheetJS
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(excelData);
 
-  // Apply hyperlinks to the Page Name column (column B, index 1)
-  for (const { row, url } of hyperlinks) {
-    const cellRef = XLSX.utils.encode_cell({ r: row, c: 1 });
-    if (ws[cellRef]) {
-      ws[cellRef].l = { Target: url, Tooltip: url };
-    }
-  }
-
   // Set column widths
   ws['!cols'] = [
     { wch: 6 },  // No
     { wch: 30 }, // Page Name
+    { wch: 80 }, // URL
     { wch: 12 }, // Date
     { wch: 60 }  // Comment
   ];
