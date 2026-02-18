@@ -2250,55 +2250,138 @@ async function cropScreenshotToCanvas(screenshotDataUrl, canvasElement) {
   });
 }
 
+/**
+ * Extract a clean display name from a DOM element.
+ * Handles aria-label, title, and textContent with Power BI suffix cleanup.
+ */
+function extractPageNameFromElement(element) {
+  let pageName = element.getAttribute('aria-label') ||
+                 element.getAttribute('title') ||
+                 element.textContent?.trim();
+
+  if (pageName && pageName !== 'Page navigation' && !pageName.toLowerCase().includes('page navigation')) {
+    pageName = pageName
+      .replace(/[,\s]+selected$/i, '')
+      .replace(/[,\s]+active$/i, '')
+      .replace(/[,\s]+current$/i, '')
+      .trim();
+
+    if (pageName && pageName.length > 0) {
+      return pageName;
+    }
+  }
+  return null;
+}
+
 function getPageName() {
-  // Try to get the active page name from Power BI's Pages panel
-  // Look for the selected/active page in the navigation pane
-  const activePageSelectors = [
-    'button[aria-selected="true"][aria-label]',
-    'button[aria-selected="true"][title]',
+  // Strategy 1: Scoped search inside known page navigation containers.
+  // This avoids false matches from other buttons on the page (e.g. filter pane,
+  // visual action buttons) that may also carry aria-selected="true".
+  // Power BI uses different container class names across workspace reports vs apps.
+  const navContainerSelectors = [
+    '.pagesNavigation',
+    '.pagesNav',
+    '.pages-navigation',
+    '[aria-label="Page navigation"]',
+    '[class*="pagesNavigation"]',
+    '[class*="pageNavigation"]',
+    '[class*="pagesNav"]',
+    'nav[class*="page"]',
+  ];
+
+  const activeAttrSelectors = [
+    'button[aria-selected="true"]',
+    'button[aria-current="true"]',
+    'button[aria-current="page"]',
+    'button.active',
+    'button.selected',
+    'button[class*="isSelected"]',
+    'button[class*="is-selected"]',
+  ];
+
+  for (const containerSel of navContainerSelectors) {
+    const container = document.querySelector(containerSel);
+    if (!container) continue;
+
+    for (const activeSel of activeAttrSelectors) {
+      const element = container.querySelector(activeSel);
+      if (element) {
+        const name = extractPageNameFromElement(element);
+        if (name) return name;
+      }
+    }
+
+    // Also try non-button active items (span/div with active class) inside nav
+    const activeItem = container.querySelector(
+      '.active, .selected, [class*="isActive"], [class*="is-active"]'
+    );
+    if (activeItem) {
+      const name = extractPageNameFromElement(activeItem);
+      if (name) return name;
+    }
+  }
+
+  // Strategy 2: Broader unscoped selectors as fallback.
+  // Order matters — more specific first to reduce false positives.
+  const broadSelectors = [
+    // Power BI app-specific patterns
+    '[class*="pageItem"][class*="active"]',
+    '[class*="pageItem"][class*="selected"]',
+    '[data-page-index][aria-selected="true"]',
+    // Standard ARIA patterns
+    'button[role="tab"][aria-selected="true"][aria-label]',
+    'button[role="tab"][aria-current="true"][aria-label]',
+    'button[role="tab"][aria-current="page"][aria-label]',
+    // Legacy Power BI selectors
     '.navigationPane .active button[title]',
     '.navigationPane .selected button[title]',
     '.navigationPane button.is-selected[title]',
     '.pagesNav .active .itemName',
-    'button[role="tab"][aria-selected="true"]',
     '.navigationPane .itemContainer.active .itemName',
-    'div[role="tablist"] button[aria-selected="true"]'
+    // Generic fallbacks
+    'button[aria-selected="true"][aria-label]',
+    'button[aria-current="true"][aria-label]',
+    'div[role="tablist"] button[aria-selected="true"]',
   ];
-  
-  for (const selector of activePageSelectors) {
+
+  for (const selector of broadSelectors) {
     const element = document.querySelector(selector);
     if (element) {
-      // Try aria-label first (works when navigation is collapsed)
-      let pageName = element.getAttribute('aria-label') || 
-                      element.getAttribute('title') || 
-                      element.textContent?.trim();
-      
-      if (pageName && pageName !== 'Page navigation') {
-        // Clean up common suffixes from Power BI
-        pageName = pageName
-          .replace(/[,\s]+selected$/i, '')
-          .replace(/[,\s]+active$/i, '')
-          .trim();
-        
-        if (pageName) {
-          return pageName;
-        }
-      }
+      const name = extractPageNameFromElement(element);
+      if (name) return name;
     }
   }
 
-  // Fallback: Try to get from document title (remove " - Power BI" suffix)
+  // Strategy 3: URL query param — some embed URLs carry pageName explicitly.
+  const searchParams = new URLSearchParams(window.location.search);
+  const urlPageName = searchParams.get('pageName');
+  if (urlPageName) {
+    // pageName in URLs is usually "ReportSection{hash}" (internal ID), not display name.
+    // Try to find a DOM element tagged with this value before giving up.
+    const matchEl = document.querySelector(
+      `[data-page-name="${urlPageName}"], [data-reportpage="${urlPageName}"]`
+    );
+    if (matchEl) {
+      const name = extractPageNameFromElement(matchEl);
+      if (name) return name;
+    }
+    // Don't return the raw ReportSection hash — it's not human-readable.
+  }
+
+  // Strategy 4: Document title — strip " - Power BI" and report name suffix.
   if (document.title) {
-    const cleanTitle = document.title.replace(/ - Power BI.*$/i, '').trim();
+    const cleanTitle = document.title
+      .replace(/ - Power BI.*$/i, '')
+      .replace(/ \| Power BI.*$/i, '')
+      .trim();
     if (cleanTitle && cleanTitle.length > 5) {
       return cleanTitle;
     }
   }
 
-  // Otherwise use URL path
+  // Strategy 5: Last path segment from URL.
   const path = window.location.pathname;
-  const parts = path.split("/").filter((p) => p);
-
+  const parts = path.split('/').filter(p => p);
   if (parts.length > 0) {
     return parts[parts.length - 1];
   }
