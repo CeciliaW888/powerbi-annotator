@@ -2274,6 +2274,15 @@ function extractPageNameFromElement(element) {
 }
 
 function getPageName() {
+  // Strategy 0: For Power BI Apps, use the left-nav tree directly.
+  // This must come first — app nav is structurally different from workspace
+  // report bottom tabs, and the broad selectors below can return the wrong
+  // element (e.g. the report group header instead of the active page).
+  if (window.location.pathname.includes('/apps/')) {
+    const appPageName = getActiveAppNavPageName();
+    if (appPageName) return appPageName;
+  }
+
   // Strategy 1: Scoped search inside known page navigation containers.
   // This avoids false matches from other buttons on the page (e.g. filter pane,
   // visual action buttons) that may also carry aria-selected="true".
@@ -2626,7 +2635,52 @@ function getReportId() {
 }
 
 // Get unique key for current page [Fix #5] - includes query params for Power BI page navigation
+// Get the active page name specifically from the Power BI App left-nav tree.
+// App nav uses role="treeitem" (not bottom tabs), so needs its own selectors.
+// Kept separate from getPageName() so getPageKey() can call it without
+// triggering the full fallback chain (avoids circular / slow behaviour).
+function getActiveAppNavPageName() {
+  const selectors = [
+    // ARIA tree navigation (Power BI App left sidebar)
+    '[role="treeitem"][aria-selected="true"]',
+    '[role="treeitem"][aria-current="page"]',
+    '[role="treeitem"][aria-current="true"]',
+    // Common class patterns on nav items
+    '[class*="navItem"][class*="isSelected"]',
+    '[class*="navItem"][class*="is-selected"]',
+    '[class*="navItem"][class*="active"]',
+    '[class*="navItem"][class*="selected"]',
+    '[class*="leftNav"][class*="active"] a',
+    '[class*="leftNav"][class*="selected"] a',
+    // List-item patterns
+    'li[class*="active"] a[class*="navItem"]',
+    'li[class*="selected"] a[class*="navItem"]',
+    'li[class*="isSelected"] a',
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const name = extractPageNameFromElement(el);
+      if (name) return name;
+    }
+  }
+  return null;
+}
+
+// Get unique key for current page.
+// For workspace reports: URL changes per page, so pathname+search is sufficient.
+// For Power BI Apps: URL stays the same across all report pages — the active
+// page is only reflected in the nav sidebar DOM. We include the page name in
+// the key so the navigation watcher (which polls getPageKey every 300ms) can
+// detect page switches and trigger onPageChanged() correctly.
 function getPageKey() {
+  if (window.location.pathname.includes('/apps/')) {
+    const pageName = getActiveAppNavPageName();
+    if (pageName) {
+      return window.location.pathname + '#page=' + encodeURIComponent(pageName);
+    }
+  }
   return window.location.pathname + window.location.search;
 }
 
