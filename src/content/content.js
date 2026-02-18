@@ -2274,6 +2274,15 @@ function extractPageNameFromElement(element) {
 }
 
 function getPageName() {
+  // Strategy 0: For Power BI Apps, use the left-nav tree directly.
+  // This must come first — app nav is structurally different from workspace
+  // report bottom tabs, and the broad selectors below can return the wrong
+  // element (e.g. the report group header instead of the active page).
+  if (window.location.pathname.includes('/apps/')) {
+    const appPageName = getActiveAppNavPageName();
+    if (appPageName) return appPageName;
+  }
+
   // Strategy 1: Scoped search inside known page navigation containers.
   // This avoids false matches from other buttons on the page (e.g. filter pane,
   // visual action buttons) that may also carry aria-selected="true".
@@ -2628,6 +2637,54 @@ function getReportId() {
 // Get unique key for current page [Fix #5] - includes query params for Power BI page navigation
 function getPageKey() {
   return window.location.pathname + window.location.search;
+}
+
+// Get the active page name from the Power BI App left-nav sidebar.
+// 
+// Strategy A (most reliable): match the current URL's ReportSection hash
+// against nav link hrefs. The sidebar <a> tags point to the same
+// ReportSection{hash} URLs, so we can find the exact nav item by href
+// and read its display text — no guessing CSS classes needed.
+//
+// Strategy B (fallback): ARIA / class-based selectors for cases where
+// nav links aren't anchor tags or hrefs aren't available.
+function getActiveAppNavPageName() {
+  // Strategy A: URL hash → nav link text match
+  const sectionMatch = window.location.pathname.match(/\/(ReportSection[a-zA-Z0-9]+)/);
+  if (sectionMatch) {
+    const sectionId = sectionMatch[1];
+    // Find all anchor tags whose href contains this ReportSection ID
+    const links = document.querySelectorAll(`a[href*="${sectionId}"]`);
+    for (const link of links) {
+      const text = link.textContent?.trim();
+      if (text && text.length > 0 && !text.includes('ReportSection')) {
+        return text;
+      }
+    }
+  }
+
+  // Strategy B: ARIA / class selectors for tree nav
+  const selectors = [
+    '[role="treeitem"][aria-selected="true"]',
+    '[role="treeitem"][aria-current="page"]',
+    '[role="treeitem"][aria-current="true"]',
+    '[class*="navItem"][class*="isSelected"]',
+    '[class*="navItem"][class*="is-selected"]',
+    '[class*="navItem"][class*="active"]',
+    '[class*="navItem"][class*="selected"]',
+    'li[class*="active"] a',
+    'li[class*="selected"] a',
+    'li[class*="isSelected"] a',
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const name = extractPageNameFromElement(el);
+      if (name) return name;
+    }
+  }
+  return null;
 }
 
 // Format timestamp
