@@ -1,6 +1,6 @@
 # Web Annotator
 
-Chrome extension for annotating websites — originally designed for Power BI reports. Features drawings, comments, and professional exports.
+Chrome extension for annotating Power BI reports. Features drawings, comments, and professional exports.
 
 ![Version](https://img.shields.io/badge/version-1.2.0-blue) ![Chrome](https://img.shields.io/badge/chrome-extension-green)
 
@@ -40,7 +40,8 @@ Chrome extension for annotating websites — originally designed for Power BI re
 2. Click the **💬 button** on the right side
 3. Click **Start Annotating** and select a tool + color
 4. Click and drag to draw, then add your comment (Ctrl+Enter to submit)
-5. Navigate between pages freely - annotation mode stays on!
+5. The sidebar hides automatically when annotation mode starts — click the 💬 button to reopen it
+6. Navigate between pages freely - annotation mode stays on!
 6. Annotations are numbered globally across all pages (Page 1: #1-3, Page 2: #4-6, etc.)
 
 ### Managing Comments
@@ -114,7 +115,7 @@ powerbi-annotator/
 | "Message port closed" error | Extension communication issue - **refresh the page** and try again |
 | Screenshot capture failed | Reload extension at `chrome://extensions` (click 🔄), then refresh the page |
 | Export stuck waiting for screenshot | Make sure you **click the extension icon** (💬) when the modal appears, not the page button |
-| Drawing toolbar hidden | Click "Start Annotating" first |
+| Drawing toolbar hidden | Click "Start Annotating" first — the sidebar will auto-hide to give you full screen space |
 
 ---
 
