@@ -14,6 +14,7 @@ let annotationIdCounter = 0; // [Fix #11] Counter to avoid Date.now() collisions
 let lastPageKey = null; // Track current page key for SPA navigation detection
 let lastReportId = null; // Track current report ID to detect report switches
 let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
+let pageNameCache = {}; // { pageKey: displayName } - page names from Power BI embed API
 
 // --- Custom Modal Helpers (Fix #8: replace blocking prompt/alert/confirm) ---
 
@@ -196,15 +197,39 @@ function allAnnotationsInViewport() {
 
 // --- Main Extension Logic ---
 
+// Inject page-world script to access Power BI embed API (content scripts can't access page JS)
+function injectPowerBIPageScript() {
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('src/content/powerbi-page-script.js');
+  (document.head || document.documentElement).appendChild(script);
+}
+
+// Listen for messages from the injected page-world script
+window.addEventListener('message', function(event) {
+  if (event.source !== window) return;
+  if (!event.data || !event.data.type) return;
+
+  if (event.data.type === '__pbi_annotator_page_info__') {
+    const { displayName, url } = event.data;
+    if (displayName && url) {
+      pageNameCache[url] = displayName;
+      chrome.storage.local.set({ pageNameCache });
+      renderPageList();
+    }
+  }
+});
+
 // Initialize the extension
 function init() {
   createSidebar();
   loadAnnotations();
   loadScreenshotCache();
+  loadPageNameCache();
   setupEventListeners();
   lastPageKey = getPageKey();
   lastReportId = getReportId();
   startNavigationWatcher();
+  injectPowerBIPageScript();
   console.log("Power BI Annotator initialized");
 }
 
@@ -356,6 +381,14 @@ function loadScreenshotCache() {
   chrome.storage.local.get(['screenshotCache'], (result) => {
     if (!chrome.runtime.lastError && result.screenshotCache) {
       screenshotCache = result.screenshotCache;
+    }
+  });
+}
+
+function loadPageNameCache() {
+  chrome.storage.local.get(['pageNameCache'], (result) => {
+    if (!chrome.runtime.lastError && result.pageNameCache) {
+      pageNameCache = result.pageNameCache;
     }
   });
 }
@@ -557,6 +590,12 @@ function toggleAnnotationMode() {
     btn.classList.add("active");
     toolbar.style.display = "flex";
     document.body.style.cursor = "crosshair";
+    // Hide sidebar so it doesn't obstruct the annotation area
+    const sidebar = document.getElementById("pbi-annotator-sidebar");
+    if (sidebar && sidebarOpen) {
+      sidebarOpen = false;
+      sidebar.classList.remove("open");
+    }
   } else {
     btn.textContent = "\ud83d\udccd Start Annotating";
     btn.classList.remove("active");
@@ -1181,41 +1220,35 @@ function showScopeDialog() {
   });
 }
 
-// Build CSV rows for a set of pages (used by both single and multi-page export)
-function buildCsvRows(pages) {
-  const headers = ["No", "Page Name", "Date", "Comment"];
-  const allRows = [];
+// Build Excel data for a set of pages (used by both single and multi-page export)
+function buildExcelData(pages) {
+  const headers = ["No", "Page Name", "URL", "Date", "Comment"];
+  const data = [headers];
   let globalNumber = 1;
 
   for (const page of pages) {
+    // Use URL from first annotation (most accurate for that page's state)
+    let pageUrl = page.url || page.key || '';
+    if (page.annotations && page.annotations.length > 0 && page.annotations[0].url) {
+      pageUrl = page.annotations[0].url;
+    }
+
     for (const annotation of page.annotations) {
       const date = new Date(annotation.timestamp);
-      allRows.push([
+      data.push([
         globalNumber++,
         page.name,
+        pageUrl,
         date.toLocaleDateString(),
         annotation.comment,
       ]);
     }
   }
 
-  return [
-    headers.join(","),
-    ...allRows.map((row) =>
-      row
-        .map((cell) => {
-          const cellStr = String(cell);
-          if (cellStr.includes(",") || cellStr.includes('"') || cellStr.includes("\n")) {
-            return `"${cellStr.replace(/"/g, '""')}"`;
-          }
-          return cellStr;
-        })
-        .join(","),
-    ),
-  ].join("\n");
+  return data;
 }
 
-// Export annotations to Excel (CSV format) [Fix #8, #10]
+// Export annotations to Excel (.xlsx format) [Fix #8, #10]
 async function exportAnnotations() {
   if (annotations.length === 0) {
     await showModal("No comments to export. Create some annotations first!");
@@ -1230,31 +1263,35 @@ async function exportAnnotations() {
   if (scope === 'all') {
     pages = getAnnotatedPages().map(p => ({
       name: p.name,
+      key: p.key,
       annotations: allAnnotationsCache[p.key] || []
     }));
   } else {
-    pages = [{ name: getPageName(), annotations }];
+    pages = [{ name: getPageName(), key: getPageKey(), annotations }];
   }
 
   const totalCount = pages.reduce((sum, p) => sum + p.annotations.length, 0);
-  const csvContent = buildCsvRows(pages);
+  const excelData = buildExcelData(pages);
 
-  // Create blob and download
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const link = document.createElement("a");
-  const url = URL.createObjectURL(blob);
+  // Create workbook and worksheet using SheetJS
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+  ws['!cols'] = [
+    { wch: 6 },  // No
+    { wch: 30 }, // Page Name
+    { wch: 80 }, // URL
+    { wch: 12 }, // Date
+    { wch: 60 }  // Comment
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, "Annotations");
 
   const now = new Date();
   const suffix = scope === 'all' ? 'AllPages' : 'Comments';
-  const filename = `PowerBI_${suffix}_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.csv`;
+  const filename = `PowerBI_${suffix}_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.xlsx`;
 
-  link.setAttribute("href", url);
-  link.setAttribute("download", filename);
-  link.style.visibility = "hidden";
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url); // [Fix #10] Prevent memory leak
+  XLSX.writeFile(wb, filename);
 
   const pageLabel = scope === 'all' ? ` across ${pages.length} page(s)` : '';
   await showModal(`Exported ${totalCount} comment(s)${pageLabel} to ${filename}`);
@@ -2274,6 +2311,12 @@ function extractPageNameFromElement(element) {
 }
 
 function getPageName() {
+  // Priority 0: Use Power BI embed API cached page name (most reliable)
+  const currentUrl = window.location.pathname + window.location.search;
+  if (pageNameCache[currentUrl]) {
+    return pageNameCache[currentUrl];
+  }
+
   // Strategy 0: For Power BI Apps, use the left-nav tree directly.
   // This must come first — app nav is structurally different from workspace
   // report bottom tabs, and the broad selectors below can return the wrong

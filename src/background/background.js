@@ -7,6 +7,22 @@
 // Also persisted to chrome.storage.session so it survives service worker restarts.
 let pendingCapture = null; // { tabId: number } or null
 
+function isSupportedTabUrl(url) {
+  if (!url) return false;
+
+  if (url.startsWith('file://')) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' &&
+      (parsed.hostname === 'app.powerbi.com' || parsed.hostname.endsWith('.powerbi.com'));
+  } catch (error) {
+    return false;
+  }
+}
+
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('Web Annotator installed');
@@ -24,6 +40,10 @@ chrome.runtime.onInstalled.addListener((details) => {
 // If a screenshot capture is pending, capture it (activeTab is granted by the click).
 // Otherwise, toggle the sidebar as usual.
 chrome.action.onClicked.addListener((tab) => {
+  if (!tab || !tab.id || !isSupportedTabUrl(tab.url)) {
+    return;
+  }
+
   // Fast path: in-memory state is available (service worker stayed alive)
   if (pendingCapture && pendingCapture.tabId === tab.id) {
     captureAndSend(tab);

@@ -11,16 +11,14 @@
   "host_permissions": [
     "https://app.powerbi.com/*",
     "https://*.powerbi.com/*",
-    "file:///*",
-    "<all_urls>"
+    "file:///*"
   ],
   "content_scripts": [
     {
       "matches": [
         "https://app.powerbi.com/*",
         "https://*.powerbi.com/*",
-        "file:///*",
-        "<all_urls>"
+        "file:///*"
       ],
       "js": ["src/lib/pptxgen.bundle.js", "src/lib/jspdf.umd.min.js", "src/lib/xlsx.full.min.js", "src/content/content.js"],
       "css": ["src/content/content.css"],
@@ -36,7 +34,11 @@
   "web_accessible_resources": [
     {
       "resources": ["src/content/powerbi-page-script.js"],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "https://app.powerbi.com/*",
+        "https://*.powerbi.com/*",
+        "file:///*"
+      ]
     }
   ],
   "icons": {
