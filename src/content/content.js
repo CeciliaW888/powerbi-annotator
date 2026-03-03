@@ -460,7 +460,7 @@ function createSidebar() {
           \ud83d\udcf8 Export Pages
         </button>
         <button id="pbi-export-annotations" class="pbi-btn pbi-btn-success">
-          \ud83d\udcca Export CSV
+          \ud83d\udcca Export Excel
         </button>
       </div>
       <div class="pbi-button-row">

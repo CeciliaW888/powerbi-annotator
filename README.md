@@ -1,4 +1,4 @@
-# Web Annotator
+# Power BI Annotator
 
 Chrome extension for annotating Power BI reports. Features drawings, comments, and professional exports.
 
