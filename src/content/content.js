@@ -489,21 +489,71 @@ function createSidebar() {
 
   document.body.appendChild(sidebar);
 
-  // Create toggle button
+  // Create toggle button (slim edge tab, draggable)
   const toggleBtn = document.createElement("button");
   toggleBtn.id = "pbi-toggle-btn";
   toggleBtn.className = "pbi-toggle-btn";
   toggleBtn.innerHTML = "\ud83d\udcac";
-  toggleBtn.title = "Toggle Comments Sidebar";
+  toggleBtn.title = "Toggle Comments Sidebar (drag to move)";
   document.body.appendChild(toggleBtn);
+
+  // Restore saved position
+  chrome.storage.local.get(['toggleBtnTop'], (result) => {
+    if (!chrome.runtime.lastError && result.toggleBtnTop != null) {
+      toggleBtn.style.top = result.toggleBtnTop + 'px';
+      toggleBtn.style.transform = 'none';
+    }
+  });
+
+  // Make toggle button draggable along the right edge
+  let isDragging = false;
+  let dragStartY = 0;
+  let btnStartTop = 0;
+  let hasDragged = false;
+
+  toggleBtn.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    hasDragged = false;
+    dragStartY = e.clientY;
+    btnStartTop = toggleBtn.getBoundingClientRect().top;
+    toggleBtn.classList.add('dragging');
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dy = e.clientY - dragStartY;
+    if (Math.abs(dy) > 3) hasDragged = true;
+    let newTop = btnStartTop + dy;
+    // Clamp to viewport
+    newTop = Math.max(0, Math.min(window.innerHeight - toggleBtn.offsetHeight, newTop));
+    toggleBtn.style.top = newTop + 'px';
+    toggleBtn.style.transform = 'none';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isDragging) return;
+    isDragging = false;
+    toggleBtn.classList.remove('dragging');
+    // Persist position
+    const top = parseInt(toggleBtn.style.top, 10);
+    if (!isNaN(top)) {
+      chrome.storage.local.set({ toggleBtnTop: top });
+    }
+  });
+
+  // Store drag state on the element so setupEventListeners can check it
+  toggleBtn._getDragState = () => hasDragged;
 }
 
 // Setup event listeners
 function setupEventListeners() {
-  // Toggle sidebar
-  document
-    .getElementById("pbi-toggle-btn")
-    .addEventListener("click", toggleSidebar);
+  // Toggle sidebar (skip if user just finished dragging the button)
+  const toggleBtnEl = document.getElementById("pbi-toggle-btn");
+  toggleBtnEl.addEventListener("click", (e) => {
+    if (toggleBtnEl._getDragState && toggleBtnEl._getDragState()) return;
+    toggleSidebar();
+  });
   document
     .getElementById("pbi-close-sidebar")
     .addEventListener("click", toggleSidebar);
