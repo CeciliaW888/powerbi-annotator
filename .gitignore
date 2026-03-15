@@ -46,3 +46,6 @@ $RECYCLE.BIN/
 *.swp
 *.swo
 *~
+# Documentation (generated)
+.env
+docs/
