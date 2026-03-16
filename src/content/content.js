@@ -217,6 +217,14 @@ window.addEventListener('message', function(event) {
       renderPageList();
     }
   }
+
+  // Handle navigation change from page-world pushState/replaceState override
+  if (event.data.type === '__pbi_annotator_navigation__') {
+    const currentKey = getPageKey();
+    if (currentKey !== lastPageKey) {
+      onPageChanged(lastPageKey, currentKey);
+    }
+  }
 });
 
 // Initialize the extension
@@ -386,7 +394,7 @@ function cacheCurrentScreenshot(pageKey) {
           }
           chrome.storage.local.set({ screenshotCache });
         } else {
-          console.log('[Cache] No screenshot in response for:', key, response);
+          console.log('[Cache] FAILED for:', key, '| error:', response && response.error ? response.error : 'empty response');
         }
       });
     }, 200); // 200ms for browser to repaint
@@ -1662,9 +1670,13 @@ async function generateMultiPagePresentation(format) {
   }
 
   // Build page data array with screenshots and comments
+  console.log('[Export] Screenshot cache keys:', Object.keys(screenshotCache));
+  console.log('[Export] Pages to export:', pages.map(p => ({ key: p.key, name: p.name })));
   let globalNumber = 1;
   const pageDataList = pages.map(page => {
     const pageAnnotations = allAnnotationsCache[page.key] || [];
+    const hasScreenshot = !!screenshotCache[page.key];
+    console.log('[Export] Page:', page.name, '| key:', page.key, '| hasScreenshot:', hasScreenshot);
     const comments = pageAnnotations.map(annotation => ({
       number: globalNumber++,
       comment: annotation.comment,
