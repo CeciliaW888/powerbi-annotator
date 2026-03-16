@@ -153,7 +153,7 @@ function getGlobalStartNumber() {
   
   // Find current page in the ordered list and count all annotations before it
   for (const page of pages) {
-    if (page.key === currentKey || page.name === currentPageName) {
+    if (page.key === currentKey) {
       break;
     }
     startNumber += page.count;
@@ -316,9 +316,6 @@ function onPageChanged(oldKey, newKey) {
     }
   });
 
-  // Cache a screenshot of the page we're leaving (best-effort, may already be transitioning)
-  cacheCurrentScreenshot(oldKey);
-
   // Clear again (double-check - handle any boxes that might have been created during transition)
   document.querySelectorAll('.pbi-annotation-box').forEach(box => box.remove());
 
@@ -331,7 +328,7 @@ function onPageChanged(oldKey, newKey) {
 
   // Calculate global starting number for this page
   const globalStart = getGlobalStartNumber();
-  
+
   // Render new page's annotations with global numbering
   annotations.forEach((annotation, index) => {
     const box = createAnnotationElement(annotation, globalStart + index + 1);
@@ -339,12 +336,16 @@ function onPageChanged(oldKey, newKey) {
   });
 
   lastPageKey = newKey;
-  
+
   // Wait for Power BI to update the DOM before getting the page name
   // Power BI updates the page title/navigation after URL change, not instantly
   setTimeout(() => {
     renderComments();
     renderPageList();
+    // Cache screenshot after annotations are rendered on the new page
+    if (annotations.length > 0) {
+      setTimeout(() => cacheCurrentScreenshot(newKey), 600);
+    }
   }, 400); // Give Power BI 400ms to update the DOM
 }
 
@@ -353,26 +354,49 @@ function cacheCurrentScreenshot(pageKey) {
   const key = pageKey || getPageKey();
   // Don't cache if page has no annotations
   if (allAnnotationsCache && (!allAnnotationsCache[key] || allAnnotationsCache[key].length === 0)) {
+    console.log('[Cache] Skipped - no annotations for:', key);
     return;
   }
+  console.log('[Cache] Attempting screenshot for:', key);
   try {
-    chrome.runtime.sendMessage({ action: 'captureForCache' }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.log('Screenshot cache skipped:', chrome.runtime.lastError.message);
-        return;
-      }
-      if (response && response.screenshot) {
-        screenshotCache[key] = response.screenshot;
-        // Limit to 20 most recent pages to manage storage size
-        const keys = Object.keys(screenshotCache);
-        if (keys.length > 20) {
-          delete screenshotCache[keys[0]];
+    // Hide sidebar and toggle button so they don't appear in the screenshot
+    const sidebar = document.getElementById('pbi-annotator-sidebar');
+    const toggleBtn = document.getElementById('pbi-toggle-btn');
+    if (sidebar) sidebar.style.display = 'none';
+    if (toggleBtn) toggleBtn.style.display = 'none';
+
+    // Wait for browser to repaint before capturing
+    setTimeout(() => {
+      chrome.runtime.sendMessage({ action: 'captureForCache' }, (response) => {
+        // Restore sidebar and toggle button
+        if (sidebar) sidebar.style.display = '';
+        if (toggleBtn) toggleBtn.style.display = '';
+
+        if (chrome.runtime.lastError) {
+          console.log('[Cache] FAILED:', chrome.runtime.lastError.message);
+          return;
         }
-        chrome.storage.local.set({ screenshotCache });
-      }
-    });
+        if (response && response.screenshot) {
+          screenshotCache[key] = response.screenshot;
+          console.log('[Cache] SUCCESS for:', key, '| Total cached:', Object.keys(screenshotCache).length);
+          // Limit to 20 most recent pages to manage storage size
+          const keys = Object.keys(screenshotCache);
+          if (keys.length > 20) {
+            delete screenshotCache[keys[0]];
+          }
+          chrome.storage.local.set({ screenshotCache });
+        } else {
+          console.log('[Cache] No screenshot in response for:', key, response);
+        }
+      });
+    }, 200); // 200ms for browser to repaint
   } catch (e) {
-    console.log('Screenshot cache error:', e);
+    console.log('[Cache] Error:', e);
+    // Restore UI elements on error
+    const sidebar = document.getElementById('pbi-annotator-sidebar');
+    const toggleBtn = document.getElementById('pbi-toggle-btn');
+    if (sidebar) sidebar.style.display = '';
+    if (toggleBtn) toggleBtn.style.display = '';
   }
 }
 
@@ -1028,7 +1052,9 @@ function getAnnotatedPages() {
           const url = new URL(firstAnnotation.url);
           const storedPath = url.pathname;
           const storedReportMatch = storedPath.match(/\/reports\/([^\/]+)/);
-          const storedReportId = storedReportMatch ? storedReportMatch[1] : storedPath;
+          const storedReportId = storedReportMatch
+            ? storedReportMatch[1]
+            : storedPath.split('/').filter(p => p).join('_');
           return storedReportId === currentReportId;
         } catch (e) {
           // If URL parsing fails, include the page
