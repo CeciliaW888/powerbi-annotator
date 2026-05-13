@@ -1659,19 +1659,10 @@ async function generatePptx(screenshot, comments, pageName) {
     });
 
     if (imgLoaded) {
-      const imgAspect = img.naturalWidth / img.naturalHeight;
-      const boxAspect = screenshotW / contentH;
-
-      let imgW, imgH;
-      if (imgAspect > boxAspect) {
-        // Image is wider than box — fit to width
-        imgW = screenshotW;
-        imgH = screenshotW / imgAspect;
-      } else {
-        // Image is taller than box — fit to height
-        imgH = contentH;
-        imgW = contentH * imgAspect;
-      }
+      const fit = window.PowerBIAnnotatorPresentationLayout.computeImageFit(
+        img.naturalWidth, img.naturalHeight, screenshotW, contentH);
+      const imgW = fit.width;
+      const imgH = fit.height;
 
       // Center the image vertically within the available area
       const imgX = margin;
@@ -1730,7 +1721,10 @@ async function generatePptx(screenshot, comments, pageName) {
   const commentsListY = contentY + 0.35;
   const commentsListH = contentH - 0.35;
   const commentLineH = 0.28;
-  const maxCommentsPerSlide = Math.floor(commentsListH / commentLineH);
+  const maxCommentsPerSlide = window.PowerBIAnnotatorPresentationLayout.commentsPerSlide({
+    availableHeight: commentsListH,
+    lineHeight: commentLineH,
+  });
 
   let currentY = commentsListY;
   let commentsOnSlide = 0;
@@ -1856,19 +1850,10 @@ async function generatePdf(screenshot, comments, pageName) {
     });
 
     if (imgLoaded) {
-      const imgAspect = img.naturalWidth / img.naturalHeight;
-      const boxAspect = screenshotW / contentH;
-
-      let imgW, imgH;
-      if (imgAspect > boxAspect) {
-        // Image is wider - fit to width
-        imgW = screenshotW;
-        imgH = screenshotW / imgAspect;
-      } else {
-        // Image is taller - fit to height
-        imgH = contentH;
-        imgW = contentH * imgAspect;
-      }
+      const fit = window.PowerBIAnnotatorPresentationLayout.computeImageFit(
+        img.naturalWidth, img.naturalHeight, screenshotW, contentH);
+      const imgW = fit.width;
+      const imgH = fit.height;
 
       // Center vertically
       const imgX = margin;
@@ -2004,16 +1989,10 @@ async function generateMultiPagePdf(pageDataList) {
       });
 
       if (imgLoaded) {
-        const imgAspect = img.naturalWidth / img.naturalHeight;
-        const boxAspect = screenshotW / contentH;
-        let imgW, imgH;
-        if (imgAspect > boxAspect) {
-          imgW = screenshotW;
-          imgH = screenshotW / imgAspect;
-        } else {
-          imgH = contentH;
-          imgW = contentH * imgAspect;
-        }
+        const fit = window.PowerBIAnnotatorPresentationLayout.computeImageFit(
+          img.naturalWidth, img.naturalHeight, screenshotW, contentH);
+        const imgW = fit.width;
+        const imgH = fit.height;
         const imgX = margin;
         const imgY = contentY + (contentH - imgH) / 2;
         doc.addImage(pageData.screenshot, 'PNG', imgX, imgY, imgW, imgH);
@@ -2125,16 +2104,10 @@ async function generateMultiPagePptx(pageDataList) {
       });
 
       if (imgLoaded) {
-        const imgAspect = img.naturalWidth / img.naturalHeight;
-        const boxAspect = screenshotW / contentH;
-        let imgW, imgH;
-        if (imgAspect > boxAspect) {
-          imgW = screenshotW;
-          imgH = screenshotW / imgAspect;
-        } else {
-          imgH = contentH;
-          imgW = contentH * imgAspect;
-        }
+        const fit = window.PowerBIAnnotatorPresentationLayout.computeImageFit(
+          img.naturalWidth, img.naturalHeight, screenshotW, contentH);
+        const imgW = fit.width;
+        const imgH = fit.height;
         slide.addImage({
           data: pageData.screenshot,
           x: margin, y: contentY + (contentH - imgH) / 2,
@@ -2163,7 +2136,10 @@ async function generateMultiPagePptx(pageDataList) {
     const commentsListY = contentY + 0.35;
     const commentsListH = contentH - 0.35;
     const commentLineH = 0.28;
-    const maxCommentsPerSlide = Math.floor(commentsListH / commentLineH);
+    const maxCommentsPerSlide = window.PowerBIAnnotatorPresentationLayout.commentsPerSlide({
+    availableHeight: commentsListH,
+    lineHeight: commentLineH,
+  });
     let currentSlideY = commentsListY;
     let commentsOnSlide = 0;
 
