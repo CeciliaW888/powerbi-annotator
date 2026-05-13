@@ -28,10 +28,14 @@ TODO.md
 LESSONS.md
 
 # Development/debug files
-CLAUDE.md
 test-page.html
 *.pdf
 .claude/
+
+# Dev/test scaffolding (not needed for the published extension)
+tests/
+package.json
+CONTEXT.md
 
 # OS files
 .DS_Store
