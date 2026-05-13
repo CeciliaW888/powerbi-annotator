@@ -9,12 +9,16 @@ let sidebarOpen = false;
 let currentDrawingTool = 'rectangle'; // rectangle, arrow, line, circle, freehand
 let currentColor = '#0078d4';
 let freehandPoints = [];
-let allAnnotationsCache = null; // [Fix #4] Cache to avoid read-modify-write race
 let annotationIdCounter = 0; // [Fix #11] Counter to avoid Date.now() collisions
-let lastPageKey = null; // Track current page key for SPA navigation detection
+let allAnnotationsCache = null; // Mirror of pageStore data for legacy call sites
+let lastPageKey = null; // Tracked by the SPA navigation watcher (separate from pageStore's listener)
 let lastReportId = null; // Track current report ID to detect report switches
 let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
 let pageNameCache = {}; // { pageKey: displayName } - page names from Power BI embed API
+
+// PageStore owns page identity, annotation persistence, and SPA navigation events.
+// Constructed at init() time with concrete adapters; see CONTEXT.md for the seam.
+let pageStore = null;
 
 // --- Custom Modal Helpers (Fix #8: replace blocking prompt/alert/confirm) ---
 
@@ -229,6 +233,13 @@ window.addEventListener('message', function(event) {
 
 // Initialize the extension
 function init() {
+  pageStore = window.PowerBIAnnotatorPageStore.createPageStore({
+    storage: chrome.storage.local,
+    locationProvider: () => ({ pathname: window.location.pathname, search: window.location.search }),
+    displayNameResolver: () => getPageName(),
+    pageOrderResolver: () => getReportPageOrder(),
+  });
+
   createSidebar();
   loadAnnotations();
   loadScreenshotCache();
@@ -1156,13 +1167,9 @@ async function clearAllAnnotations() {
     .querySelectorAll(".pbi-annotation-box")
     .forEach((box) => box.remove());
   
-  // Clear all pages from storage
-  allAnnotationsCache = {};
-  chrome.storage.local.set({ annotations: {} }, () => {
-    if (chrome.runtime.lastError) {
-      console.error("Failed to clear annotations:", chrome.runtime.lastError);
-    }
-  });
+  // Clear all pages from storage via PageStore (mirror stays in sync because
+  // _snapshot() returns the same object reference; deleteAll mutates in place).
+  if (pageStore) pageStore.deleteAll();
   
   renderComments();
   renderPageList();
@@ -2471,54 +2478,17 @@ function createAnnotationElement(annotation, number) {
 
 // Save annotations to Chrome storage [Fix #4] - uses cache to avoid read-modify-write race
 function saveAnnotations() {
-  const pageKey = getPageKey();
-
-  if (allAnnotationsCache === null) {
-    // Cache not loaded yet - fall back to read-modify-write
-    chrome.storage.local.get(["annotations"], (result) => {
-      if (chrome.runtime.lastError) {
-        console.error("Failed to load annotations for saving:", chrome.runtime.lastError);
-        return;
-      }
-      allAnnotationsCache = result.annotations || {};
-      allAnnotationsCache[pageKey] = annotations;
-      chrome.storage.local.set({ annotations: allAnnotationsCache }, () => {
-        if (chrome.runtime.lastError) {
-          console.error("Failed to save annotations:", chrome.runtime.lastError);
-        }
-      });
-    });
-  } else {
-    // Cache is available - write directly (no read needed)
-    allAnnotationsCache[pageKey] = annotations;
-    chrome.storage.local.set({ annotations: allAnnotationsCache }, () => {
-      if (chrome.runtime.lastError) {
-        console.error("Failed to save annotations:", chrome.runtime.lastError);
-      }
-    });
+  // Delegates to PageStore. The pageKey, in-memory cache, and chrome.storage
+  // write all live behind that seam.
+  if (pageStore) {
+    pageStore.saveAnnotations(annotations);
   }
 }
 
-// Load annotations from Chrome storage [Fix #4, #5]
 function loadAnnotations() {
-  const pageKey = getPageKey();
-  const legacyKey = window.location.pathname; // [Fix #5] Old key format for migration
-
-  chrome.storage.local.get(["annotations"], (result) => {
-    if (chrome.runtime.lastError) {
-      console.error("Failed to load annotations:", chrome.runtime.lastError);
-      return;
-    }
-    allAnnotationsCache = result.annotations || {};
-    annotations = allAnnotationsCache[pageKey] || [];
-
-    // [Fix #5] Migrate from legacy pathname-only key if new key has no data
-    if (annotations.length === 0 && legacyKey !== pageKey && allAnnotationsCache[legacyKey]) {
-      annotations = allAnnotationsCache[legacyKey];
-      allAnnotationsCache[pageKey] = annotations;
-      delete allAnnotationsCache[legacyKey];
-      chrome.storage.local.set({ annotations: allAnnotationsCache });
-    }
+  pageStore.init().then(() => {
+    allAnnotationsCache = pageStore._snapshot();
+    annotations = pageStore.current().annotations;
 
     // Migrate old annotations to include pageName field
     let needsSave = false;
@@ -2530,13 +2500,12 @@ function loadAnnotations() {
       }
     });
     if (needsSave) {
-      allAnnotationsCache[pageKey] = annotations;
-      chrome.storage.local.set({ annotations: allAnnotationsCache });
+      pageStore.saveAnnotations(annotations);
     }
 
     // Calculate global starting number for this page
     const globalStart = getGlobalStartNumber();
-    
+
     // Render saved annotations on page with global numbering
     annotations.forEach((annotation, index) => {
       const box = createAnnotationElement(annotation, globalStart + index + 1);
