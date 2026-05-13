@@ -728,7 +728,6 @@ function handleMouseDown(e) {
 
   if (currentDrawingTool === 'freehand') {
     freehandPoints = [{ x: startX, y: startY }];
-    currentAnnotation.innerHTML = `<svg class="pbi-freehand-svg" style="position: absolute; top: 0; left: 0; pointer-events: none;"><path d="" stroke="${currentColor}" stroke-width="3" fill="none"/></svg>`;
   } else {
     currentAnnotation.style.width = "0px";
     currentAnnotation.style.height = "0px";
@@ -740,132 +739,36 @@ function handleMouseDown(e) {
 // Handle mouse move - resize annotation
 function handleMouseMove(e) {
   if (!currentAnnotation) return;
-
-  const width = e.pageX - startX;
-  const height = e.pageY - startY;
+  const Tools = window.PowerBIAnnotatorTools;
 
   if (currentDrawingTool === 'freehand') {
-    // Add point to freehand path
     freehandPoints.push({ x: e.pageX, y: e.pageY });
-
-    // Update SVG path
-    const svg = currentAnnotation.querySelector('svg');
-    const path = svg.querySelector('path');
-
-    // Calculate bounds
-    const minX = Math.min(...freehandPoints.map(p => p.x));
-    const minY = Math.min(...freehandPoints.map(p => p.y));
-    const maxX = Math.max(...freehandPoints.map(p => p.x));
-    const maxY = Math.max(...freehandPoints.map(p => p.y));
-
-    // Update container position and size
-    currentAnnotation.style.left = minX + "px";
-    currentAnnotation.style.top = minY + "px";
-    currentAnnotation.style.width = (maxX - minX) + "px";
-    currentAnnotation.style.height = (maxY - minY) + "px";
-
-    // Create path data (relative to container)
-    const pathData = freehandPoints.map((p, i) => {
-      const x = p.x - minX;
-      const y = p.y - minY;
-      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
-    }).join(' ');
-
-    svg.setAttribute('width', maxX - minX);
-    svg.setAttribute('height', maxY - minY);
-    path.setAttribute('d', pathData);
-  } else {
-    // For other tools, draw bounding box
-    currentAnnotation.style.width = Math.abs(width) + "px";
-    currentAnnotation.style.height = Math.abs(height) + "px";
-    currentAnnotation.style.left = (width < 0 ? e.pageX : startX) + "px";
-    currentAnnotation.style.top = (height < 0 ? e.pageY : startY) + "px";
-
-    // Update visual representation based on tool
-    updateAnnotationVisual(currentAnnotation, width, height);
   }
+
+  const geometry = Tools.computeGeometry(
+    currentDrawingTool,
+    { x: startX, y: startY },
+    { x: e.pageX, y: e.pageY },
+    currentDrawingTool === 'freehand' ? freehandPoints : null
+  );
+
+  currentAnnotation.style.left = geometry.x + 'px';
+  currentAnnotation.style.top = geometry.y + 'px';
+  currentAnnotation.style.width = geometry.width + 'px';
+  currentAnnotation.style.height = geometry.height + 'px';
+
+  updateAnnotationVisual(currentAnnotation, geometry);
 }
 
-// Update annotation visual based on drawing tool
-function updateAnnotationVisual(element, width, height) {
-  const absWidth = Math.abs(width);
-  const absHeight = Math.abs(height);
-
-  // Remove existing SVG if any
+function updateAnnotationVisual(element, geometry) {
   const existingSvg = element.querySelector('svg');
   if (existingSvg) existingSvg.remove();
 
-  if (currentDrawingTool === 'arrow') {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute('width', absWidth);
-    svg.setAttribute('height', absHeight);
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.pointerEvents = 'none';
+  const tool = window.PowerBIAnnotatorTools[currentDrawingTool];
+  if (!tool) return;
 
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    const startX = width < 0 ? absWidth : 0;
-    const startY = height < 0 ? absHeight : 0;
-    const endX = width < 0 ? 0 : absWidth;
-    const endY = height < 0 ? 0 : absHeight;
-
-    // Arrow head size
-    const headLen = 20;
-    const angle = Math.atan2(endY - startY, endX - startX);
-    const arrowX1 = endX - headLen * Math.cos(angle - Math.PI / 6);
-    const arrowY1 = endY - headLen * Math.sin(angle - Math.PI / 6);
-    const arrowX2 = endX - headLen * Math.cos(angle + Math.PI / 6);
-    const arrowY2 = endY - headLen * Math.sin(angle + Math.PI / 6);
-
-    path.setAttribute('d', `M ${startX} ${startY} L ${endX} ${endY} M ${arrowX1} ${arrowY1} L ${endX} ${endY} L ${arrowX2} ${arrowY2}`);
-    path.setAttribute('stroke', currentColor);
-    path.setAttribute('stroke-width', '3');
-    path.setAttribute('fill', 'none');
-
-    svg.appendChild(path);
-    element.appendChild(svg);
-  } else if (currentDrawingTool === 'line') {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute('width', absWidth);
-    svg.setAttribute('height', absHeight);
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.pointerEvents = 'none';
-
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute('x1', width < 0 ? absWidth : 0);
-    line.setAttribute('y1', height < 0 ? absHeight : 0);
-    line.setAttribute('x2', width < 0 ? 0 : absWidth);
-    line.setAttribute('y2', height < 0 ? 0 : absHeight);
-    line.setAttribute('stroke', currentColor);
-    line.setAttribute('stroke-width', '3');
-
-    svg.appendChild(line);
-    element.appendChild(svg);
-  } else if (currentDrawingTool === 'circle') {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute('width', absWidth);
-    svg.setAttribute('height', absHeight);
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.pointerEvents = 'none';
-
-    const ellipse = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
-    ellipse.setAttribute('cx', absWidth / 2);
-    ellipse.setAttribute('cy', absHeight / 2);
-    ellipse.setAttribute('rx', absWidth / 2);
-    ellipse.setAttribute('ry', absHeight / 2);
-    ellipse.setAttribute('stroke', currentColor);
-    ellipse.setAttribute('stroke-width', '3');
-    ellipse.setAttribute('fill', 'none');
-
-    svg.appendChild(ellipse);
-    element.appendChild(svg);
-  }
-  // Rectangle is handled by default border
+  const svg = tool.render(geometry, currentColor);
+  if (svg) element.appendChild(svg);
 }
 
 // Handle mouse up - finish annotation and prompt for comment
@@ -2541,118 +2444,22 @@ function createAnnotationElement(annotation, number) {
   box.style.width = annotation.width + "px";
   box.style.height = annotation.height + "px";
 
-  const tool = annotation.tool || 'rectangle';
+  const toolName = annotation.tool || 'rectangle';
   const color = annotation.color || '#0078d4';
   box.style.borderColor = color;
 
-  // Helper to create and append the number badge via DOM (not innerHTML)
-  function appendBadge() {
-    const badge = document.createElement('div');
-    badge.className = 'pbi-annotation-number';
-    badge.textContent = number;
-    box.appendChild(badge);
+  const Tools = window.PowerBIAnnotatorTools;
+  const tool = Tools[toolName];
+  if (tool) {
+    const geometry = Tools.geometryFromAnnotation(annotation);
+    const svg = tool.render(geometry, color);
+    if (svg) box.appendChild(svg);
   }
 
-  // [Fix #2] Determine direction from stored start/end points (backward-compatible)
-  function getDirection() {
-    if (annotation.startPoint && annotation.endPoint) {
-      return {
-        x1: annotation.startPoint.x <= annotation.endPoint.x ? 0 : annotation.width,
-        y1: annotation.startPoint.y <= annotation.endPoint.y ? 0 : annotation.height,
-        x2: annotation.startPoint.x <= annotation.endPoint.x ? annotation.width : 0,
-        y2: annotation.startPoint.y <= annotation.endPoint.y ? annotation.height : 0,
-      };
-    }
-    // Backward compat: default to top-left → bottom-right
-    return { x1: 0, y1: 0, x2: annotation.width, y2: annotation.height };
-  }
-
-  // Render based on tool type
-  if (tool === 'freehand' && annotation.freehandPath) {
-    const points = annotation.freehandPath;
-    const minX = Math.min(...points.map(p => p.x));
-    const minY = Math.min(...points.map(p => p.y));
-
-    const pathData = points.map((p, i) => {
-      const x = p.x - minX;
-      const y = p.y - minY;
-      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
-    }).join(' ');
-
-    box.innerHTML = `<svg class="pbi-freehand-svg" width="${annotation.width}" height="${annotation.height}" style="position: absolute; top: 0; left: 0; pointer-events: none;"><path d="${pathData}" stroke="${color}" stroke-width="3" fill="none"/></svg>`;
-    appendBadge();
-  } else if (tool === 'arrow') {
-    const dir = getDirection();
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute('width', annotation.width);
-    svg.setAttribute('height', annotation.height);
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.pointerEvents = 'none';
-
-    const headLen = 20;
-    const angle = Math.atan2(dir.y2 - dir.y1, dir.x2 - dir.x1);
-    const arrowX1 = dir.x2 - headLen * Math.cos(angle - Math.PI / 6);
-    const arrowY1 = dir.y2 - headLen * Math.sin(angle - Math.PI / 6);
-    const arrowX2 = dir.x2 - headLen * Math.cos(angle + Math.PI / 6);
-    const arrowY2 = dir.y2 - headLen * Math.sin(angle + Math.PI / 6);
-
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute('d', `M ${dir.x1} ${dir.y1} L ${dir.x2} ${dir.y2} M ${arrowX1} ${arrowY1} L ${dir.x2} ${dir.y2} L ${arrowX2} ${arrowY2}`);
-    path.setAttribute('stroke', color);
-    path.setAttribute('stroke-width', '3');
-    path.setAttribute('fill', 'none');
-
-    svg.appendChild(path);
-    box.appendChild(svg);
-    appendBadge();
-  } else if (tool === 'line') {
-    const dir = getDirection();
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute('width', annotation.width);
-    svg.setAttribute('height', annotation.height);
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.pointerEvents = 'none';
-
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute('x1', dir.x1);
-    line.setAttribute('y1', dir.y1);
-    line.setAttribute('x2', dir.x2);
-    line.setAttribute('y2', dir.y2);
-    line.setAttribute('stroke', color);
-    line.setAttribute('stroke-width', '3');
-
-    svg.appendChild(line);
-    box.appendChild(svg);
-    appendBadge();
-  } else if (tool === 'circle') {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute('width', annotation.width);
-    svg.setAttribute('height', annotation.height);
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.pointerEvents = 'none';
-
-    const ellipse = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
-    ellipse.setAttribute('cx', annotation.width / 2);
-    ellipse.setAttribute('cy', annotation.height / 2);
-    ellipse.setAttribute('rx', annotation.width / 2);
-    ellipse.setAttribute('ry', annotation.height / 2);
-    ellipse.setAttribute('stroke', color);
-    ellipse.setAttribute('stroke-width', '3');
-    ellipse.setAttribute('fill', 'none');
-
-    svg.appendChild(ellipse);
-    box.appendChild(svg);
-    appendBadge();
-  } else {
-    // Rectangle - default
-    appendBadge();
-  }
+  const badge = document.createElement('div');
+  badge.className = 'pbi-annotation-number';
+  badge.textContent = number;
+  box.appendChild(badge);
 
   box.addEventListener("click", (e) => {
     e.stopPropagation();

@@ -56,7 +56,12 @@ function geometryFromAnnotation(annotation) {
     geometry.y2 = annotation.height;
   }
   if (annotation.freehandPath) {
-    geometry.freehandPath = annotation.freehandPath;
+    const minX = Math.min(...annotation.freehandPath.map(p => p.x));
+    const minY = Math.min(...annotation.freehandPath.map(p => p.y));
+    geometry.freehandPath = annotation.freehandPath.map(p => ({
+      x: p.x - minX,
+      y: p.y - minY,
+    }));
   }
   return geometry;
 }
@@ -138,6 +143,10 @@ const PowerBIAnnotatorTools = {
     },
   },
 };
+
+if (typeof window !== 'undefined') {
+  window.PowerBIAnnotatorTools = PowerBIAnnotatorTools;
+}
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = PowerBIAnnotatorTools;

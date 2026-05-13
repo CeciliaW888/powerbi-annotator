@@ -81,18 +81,27 @@ test('geometryFromAnnotation falls back to top-left → bottom-right when startP
   assert.strictEqual(g.y2, 40);
 });
 
-test('geometryFromAnnotation passes through freehandPath for freehand tool', () => {
+test('geometryFromAnnotation normalises absolute freehandPath into box-local coordinates', () => {
+  // Stored freehandPath uses absolute page coordinates; render needs box-local.
   const annotation = {
     tool: 'freehand',
-    x: 10,
-    y: 20,
-    width: 30,
-    height: 40,
-    freehandPath: [{ x: 0, y: 0 }, { x: 30, y: 40 }],
+    x: 100,
+    y: 200,
+    width: 50,
+    height: 30,
+    freehandPath: [
+      { x: 100, y: 200 },
+      { x: 125, y: 215 },
+      { x: 150, y: 230 },
+    ],
   };
   const g = tools.geometryFromAnnotation(annotation);
 
-  assert.deepStrictEqual(g.freehandPath, [{ x: 0, y: 0 }, { x: 30, y: 40 }]);
+  assert.deepStrictEqual(g.freehandPath, [
+    { x: 0, y: 0 },
+    { x: 25, y: 15 },
+    { x: 50, y: 30 },
+  ]);
 });
 
 test('line.render returns an SVG containing a <line> element with the given color and endpoints', () => {
