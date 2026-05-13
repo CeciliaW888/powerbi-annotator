@@ -1,0 +1,12 @@
+{
+  "name": "powerbi-annotator",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Chrome extension that adds annotation capabilities to Power BI Service reports. See README.md.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}
