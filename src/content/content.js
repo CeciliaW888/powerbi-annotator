@@ -2518,7 +2518,11 @@ function getReportId() {
 }
 
 // Get unique key for current page [Fix #5] - includes query params for Power BI page navigation
+// Returns the canonical key used by PageStore so legacy callers and PageStore
+// agree on what identifies "the current page". Falls back to pathname+search
+// before PageStore is initialised (very brief window at startup).
 function getPageKey() {
+  if (pageStore) return pageStore.current().key;
   return window.location.pathname + window.location.search;
 }
 
