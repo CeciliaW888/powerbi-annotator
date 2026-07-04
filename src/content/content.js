@@ -2231,8 +2231,11 @@ function getReportCanvas() {
   const canvasSelectors = [
     'div[class*="explorationContainer"]',
     'div.explorationContainer',
+    'exploration-container',            // App view (workspace chrome absent)
+    'report-embed div[class*="displayArea"]',
     'visual-container-repeat',
     'explore-canvas-modern',
+    'explore-canvas',
     'iframe[title*="Report"]',
     '.reportCanvas',
     '.visualContainer'
