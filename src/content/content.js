@@ -744,6 +744,10 @@ function toggleSidebar() {
 // Toggle annotation mode
 function toggleAnnotationMode() {
   isAnnotationMode = !isAnnotationMode;
+  // While drawing, existing boxes must not swallow mouse events — otherwise
+  // drawing over a previous annotation fires its view-comment click handler
+  // and collides with the new-comment prompt (pointer-events rule in CSS).
+  document.body.classList.toggle("pbi-annotating", isAnnotationMode);
   const btn = document.getElementById("pbi-toggle-annotate");
   const toolbar = document.getElementById("pbi-drawing-toolbar");
 

@@ -577,6 +577,13 @@
   transition: all 0.2s;
 }
 
+/* While annotating, existing boxes must not intercept the mouse — drawing
+   over a previous annotation would fire its view-comment click handler and
+   collide with the new-comment prompt (toggled via body class in content.js) */
+body.pbi-annotating .pbi-annotation-box {
+  pointer-events: none;
+}
+
 .pbi-annotation-box:hover {
   background: rgba(0, 120, 212, 0.2);
   border-color: #005a9e;
