@@ -1655,6 +1655,10 @@ function showExportProgress(pageNames) {
   overlay.querySelector('.pbi-modal-btn-cancel').addEventListener('click', () => {
     cancelled = true;
     overlay.remove();
+    // Abort any in-flight capture wait, or the wizard's `await captureVisiblePage()`
+    // never resolves and the sidebar stays hidden forever
+    if (screenshotResolver) screenshotResolver(null);
+    chrome.runtime.sendMessage({ action: 'cancelCapture' }, () => { void chrome.runtime.lastError; });
   });
   return {
     setStatus(idx, status) { // 'active' | 'done' | 'failed'
@@ -1724,6 +1728,7 @@ async function generateMultiPagePresentation(format) {
     sidebar.style.display = '';
     toggleBtn.style.display = '';
 
+    if (progress.isCancelled()) break;
     if (!raw) { progress.setStatus(i, 'failed'); continue; }
     const reportCanvas = getReportCanvas();
     const screenshot = reportCanvas ? await cropScreenshotToCanvas(raw, reportCanvas) : raw;
