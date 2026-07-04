@@ -810,7 +810,7 @@ async function handleMouseUp(e) {
   const comment = await showPrompt("Enter your comment for this annotation:");
 
   if (comment && comment.trim()) {
-    const annotation = {
+    let annotation = {
       id: generateAnnotationId(),
       x: parseInt(finishedAnnotation.style.left),
       y: parseInt(finishedAnnotation.style.top),
@@ -826,6 +826,15 @@ async function handleMouseUp(e) {
       startPoint: { x: drawStartX, y: drawStartY },
       endPoint: { x: drawEndX, y: drawEndY },
     };
+
+    // Anchor to the report canvas so the shape survives layout changes
+    // (App view, window resize, sidebar toggles). Falls back to legacy
+    // absolute coords when no canvas is found (e.g. test-page.html edge cases).
+    const reportCanvas = getReportCanvas();
+    if (reportCanvas) {
+      const canvasRect = window.PowerBIAnnotatorCoords.getCanvasPageRect(reportCanvas, window);
+      annotation = window.PowerBIAnnotatorCoords.annotationToRelative(annotation, canvasRect);
+    }
 
     annotations.push(annotation);
     saveAnnotations();
