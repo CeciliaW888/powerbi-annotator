@@ -26,6 +26,20 @@ let pageStore = null;
  * Show an informational modal (replaces alert).
  * Returns a promise that resolves when the user clicks OK.
  */
+function showToast(message) {
+  const existing = document.querySelector('.pbi-toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = 'pbi-toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('visible'));
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
+
 function showModal(message) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
@@ -500,12 +514,13 @@ function createSidebar() {
   sidebar.className = "pbi-sidebar";
   sidebar.innerHTML = `
     <div class="pbi-sidebar-header">
-      <h3>Comments</h3>
+      <h3>Power BI Annotator<span id="pbi-total-count" class="pbi-count-badge"></span></h3>
       <button id="pbi-close-sidebar" class="pbi-btn-close">\u00d7</button>
     </div>
     <div class="pbi-sidebar-controls">
       <button id="pbi-toggle-annotate" class="pbi-btn pbi-btn-full">
-        \ud83d\udccd Start Annotating
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+        <span class="pbi-btn-label">Start annotating</span>
       </button>
       <div id="pbi-drawing-toolbar" class="pbi-drawing-toolbar" style="display: none;">
         <div class="pbi-tool-label">Drawing Tool:</div>
@@ -524,14 +539,23 @@ function createSidebar() {
         <button class="pbi-tool-btn" data-tool="freehand" title="Freehand">
           <svg width="20" height="20" viewBox="0 0 20 20"><path d="M2 15 Q 5 5, 10 10 T 18 8" fill="none" stroke="currentColor" stroke-width="2"/></svg>
         </button>
-        <input type="color" id="pbi-color-picker" value="#0078d4" title="Color">
+        <div class="pbi-swatch-row">
+          <button class="pbi-swatch active" data-color="#0078d4" style="background:#0078d4" title="Blue"></button>
+          <button class="pbi-swatch" data-color="#e81123" style="background:#e81123" title="Red"></button>
+          <button class="pbi-swatch" data-color="#107c10" style="background:#107c10" title="Green"></button>
+          <button class="pbi-swatch" data-color="#ffb900" style="background:#ffb900" title="Amber"></button>
+          <button class="pbi-swatch" data-color="#5c2d91" style="background:#5c2d91" title="Purple"></button>
+          <input type="color" id="pbi-color-picker" value="#0078d4" title="Custom color">
+        </div>
       </div>
       <div class="pbi-button-row">
         <button id="pbi-export-pages" class="pbi-btn pbi-btn-primary">
-          \ud83d\udcf8 Export Pages
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Export PDF / PPT</span>
         </button>
         <button id="pbi-export-annotations" class="pbi-btn pbi-btn-success">
-          \ud83d\udcca Export Excel
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+          <span>Export Excel</span>
         </button>
       </div>
       <div class="pbi-button-row">
@@ -554,7 +578,14 @@ function createSidebar() {
       <div class="pbi-page-list" id="pbi-page-list" style="display: none;"></div>
     </div>
     <div class="pbi-sidebar-content" id="pbi-comments-list">
-      <p class="pbi-empty-state">No comments yet. Click "Start Annotating" to begin.</p>
+      <div class="pbi-empty-state">
+        <p><strong>No annotations yet</strong></p>
+        <ol>
+          <li>Click <em>Start annotating</em></li>
+          <li>Drag on the report to draw a shape</li>
+          <li>Type a comment — it appears here</li>
+        </ol>
+      </div>
     </div>
   `;
 
@@ -662,9 +693,19 @@ function setupEventListeners() {
     });
   });
 
+  // Color swatches
+  document.querySelectorAll('.pbi-swatch').forEach((swatch) => {
+    swatch.addEventListener('click', () => {
+      currentColor = swatch.dataset.color;
+      document.getElementById('pbi-color-picker').value = currentColor;
+      document.querySelectorAll('.pbi-swatch').forEach((s) => s.classList.toggle('active', s === swatch));
+    });
+  });
+
   // Color picker
   document.getElementById("pbi-color-picker").addEventListener("change", (e) => {
     currentColor = e.target.value;
+    document.querySelectorAll('.pbi-swatch').forEach((s) => s.classList.remove('active'));
   });
 
   // Page list toggle
@@ -706,8 +747,9 @@ function toggleAnnotationMode() {
   const btn = document.getElementById("pbi-toggle-annotate");
   const toolbar = document.getElementById("pbi-drawing-toolbar");
 
+  const label = btn.querySelector(".pbi-btn-label");
   if (isAnnotationMode) {
-    btn.textContent = "\u2713 Annotating (Click & Drag)";
+    if (label) label.textContent = "Stop annotating";
     btn.classList.add("active");
     toolbar.style.display = "flex";
     document.body.style.cursor = "crosshair";
@@ -718,7 +760,7 @@ function toggleAnnotationMode() {
       sidebar.classList.remove("open");
     }
   } else {
-    btn.textContent = "\ud83d\udccd Start Annotating";
+    if (label) label.textContent = "Start annotating";
     btn.classList.remove("active");
     toolbar.style.display = "none";
     document.body.style.cursor = "default";
@@ -913,9 +955,12 @@ function showAnnotationComment(id) {
 function renderComments() {
   const commentsList = document.getElementById("pbi-comments-list");
 
+  const countBadge = document.getElementById('pbi-total-count');
+  if (countBadge) countBadge.textContent = annotations.length || '';
+
   if (annotations.length === 0) {
     commentsList.innerHTML =
-      '<p class="pbi-empty-state">No comments yet. Click "Start Annotating" to begin.</p>';
+      '<div class="pbi-empty-state"><p><strong>No annotations yet</strong></p><ol><li>Click <em>Start annotating</em></li><li>Drag on the report to draw a shape</li><li>Type a comment — it appears here</li></ol></div>';
     return;
   }
 
@@ -925,7 +970,7 @@ function renderComments() {
       (annotation, index) => `
     <div class="pbi-comment-item" data-id="${annotation.id}">
       <div class="pbi-comment-header">
-        <span class="pbi-comment-number">#${globalStart + index + 1}</span>
+        <span class="pbi-comment-number" style="background:${annotation.color || '#0078d4'}">#${globalStart + index + 1}</span>
         <span class="pbi-comment-time">${formatTime(annotation.timestamp)}</span>
       </div>
       <div class="pbi-comment-text">${escapeHtml(annotation.comment)}</div>
@@ -1180,6 +1225,7 @@ async function clearCurrentPageAnnotations() {
   saveAnnotations();
   renderComments();
   renderPageList();
+  showToast('Page annotations cleared');
 }
 
 // Clear all annotations across all pages [Fix #8] - async for custom confirm
@@ -1207,9 +1253,10 @@ async function clearAllAnnotations() {
   // Clear all pages from storage via PageStore (mirror stays in sync because
   // _snapshot() returns the same object reference; deleteAll mutates in place).
   if (pageStore) pageStore.deleteAll();
-  
+
   renderComments();
   renderPageList();
+  showToast('All annotations cleared');
 }
 
 // Show scope selection dialog when multiple pages have annotations
@@ -1548,11 +1595,13 @@ async function generatePresentation(format) {
   // Fork: PPT format generates a real .pptx file
   if (format === 'ppt') {
     await generatePptx(screenshot, comments, pageName);
+    showToast('Export ready — check your downloads');
     return;
   }
 
   // PDF format: generate real .pdf file using jsPDF
   await generatePdf(screenshot, comments, pageName);
+  showToast('Export ready — check your downloads');
 }
 
 /**
@@ -1709,6 +1758,7 @@ async function generateMultiPagePresentation(format) {
   }
   if (format === 'ppt') await generateMultiPagePptx(pageDataList);
   else await generateMultiPagePdf(pageDataList);
+  showToast('Export ready — check your downloads');
 }
 
 /**
@@ -2589,6 +2639,7 @@ function createAnnotationElement(annotation, number) {
   const badge = document.createElement('div');
   badge.className = 'pbi-annotation-number';
   badge.textContent = number;
+  badge.style.background = color;
   box.appendChild(badge);
 
   box.addEventListener("click", (e) => {
