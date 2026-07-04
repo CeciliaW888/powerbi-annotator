@@ -24,10 +24,12 @@ The order matters — earlier scripts must be loaded before later ones reference
 1. src/lib/pptxgen.bundle.js          PptxGenJS (.pptx)
 2. src/lib/jspdf.umd.min.js           jsPDF (.pdf)
 3. src/lib/xlsx.full.min.js           SheetJS (.xlsx)
-4. src/content/tools.js               Pure drawing-tool rendering + geometry
-5. src/content/page-store.js          Per-page annotation storage (canonical keys + SPA nav)
-6. src/content/presentation-layout.js Pure export layout math
-7. src/content/content.js             Main orchestration — UI, drawing handlers, exports
+4. src/content/coords.js              Pure canvas-relative coordinate conversion + v1 migration
+5. src/content/tools.js               Pure drawing-tool rendering + geometry
+6. src/content/page-store.js          Per-page annotation storage (canonical keys + SPA nav)
+7. src/content/page-navigator.js      Pure nav-element finder (workspace tabs + App left-nav)
+8. src/content/presentation-layout.js Pure export layout math
+9. src/content/content.js             Main orchestration — UI, drawing handlers, exports
 ```
 
 Each of the three new modules attaches to `window.PowerBIAnnotator*` for the browser and also `module.exports`s for the Node tests via `_setup.js` (jsdom DOM globals).
@@ -100,9 +102,18 @@ Key state variables:
   color: "#hex",
   freehandPath: [{x, y}],           // freehand only — ABSOLUTE coords
   startPoint: {x, y},               // arrow/line direction
-  endPoint:   {x, y}
+  endPoint:   {x, y},
+
+  // v2 (canvas-anchored) fields — added by coords.js, see recurring bug #7:
+  coordSpace: 'canvas',             // present ⇒ render via resolveAnnotationForLayout
+  rel:         {x, y, w, h},        // box as fractions (0–1) of the report canvas rect
+  relStart:    {x, y},              // relStart/relEnd/relFreehand mirror the pixel points
+  relEnd:      {x, y},
+  relFreehand: [{x, y}] | null
 }
 ```
+
+Legacy v1 annotations (no `coordSpace`) are migrated to v2 on first render where the canvas is found (`migrateLoadedAnnotations`), using the current canvas rect. The absolute `x/y/width/height` are always kept as a v1 fallback.
 
 ## Recurring Bugs — Verify After Every Refactor
 
@@ -114,20 +125,25 @@ These bugs have been re-introduced multiple times during merges/rollbacks. Befor
 4. **Screenshot caching timing** — Do NOT call `cacheCurrentScreenshot(oldKey)` in `onPageChanged` (annotations are already cleared from DOM). DO cache after rendering on the new page (after the 400ms DOM-settle timeout). Hide sidebar AND toggle button before capture, with a 200ms repaint delay.
 5. **`captureVisibleTab` requires `activeTab` or `<all_urls>`** — `chrome.tabs.captureVisibleTab` from the background worker fails on file:// AND https:// when only specific `host_permissions` are set. Error: `"Either the '<all_urls>' or 'activeTab' permission is required."` This is a Chrome limitation; silent caching is impossible without `<all_urls>` (which triggers stricter Web Store review). Workaround: the user clicks the extension icon to grant `activeTab` per-export.
 6. **PageStore key vs. `getPageKey()` mismatch** — `getPageKey()` MUST delegate to `pageStore.current().key`. If it returns `pathname+search` while PageStore writes canonical `reportId#sectionHash`, you'll get two coexisting key formats and annotations disappear (commit `09d3f40` fix).
+7. **Never read `annotation.x/y` directly for display** — annotations must always be rendered through `resolveAnnotationForLayout` (which rescales v2 `rel` fractions to the current canvas rect). Reading the stored absolute `x/y` bypasses the canvas anchoring and reintroduces the drift-on-layout-change bug. The stored `x/y/width/height` are kept only as a v1 fallback / rollback safety net.
 
 ## Screenshot / Export Flow
 
-1. User clicks **Export Pages** → format dialog → PDF or PPT
-2. `generatePresentation(format)` runs:
-   - Hides sidebar + toggle button
-   - For each annotated page: uses `screenshotCache[key]` if present
-   - For the current page (missing from cache): sends `{ action: 'prepareCapture' }` to background
-3. `waitForScreenshotOrCancel()` shows a modal: "Click the extension icon"
-4. User clicks the extension icon → `activeTab` permission grants → background calls `chrome.tabs.captureVisibleTab(null, { format: 'png' })`
-5. Background returns `{ action: 'screenshotResult', screenshot: dataUrl }`
-6. Content script bundles screenshots + comments into the export (PptxGenJS for PPT, jsPDF for PDF, SheetJS for Excel)
+### Single page (`generatePresentation`)
+1. Hides sidebar + toggle button, sends `{ action: 'prepareCapture' }` to background.
+2. `waitForScreenshotOrCancel()` shows a modal: "Click the extension icon".
+3. User clicks the extension icon → `activeTab` grants → background `chrome.tabs.captureVisibleTab`.
+4. Background returns `{ action: 'screenshotResult', screenshot: dataUrl }`; content bundles into PDF/PPT.
 
-**Camera icon (📸) in sidebar = `screenshotCache[key]` is populated.** Pages without it will be blank in multi-page exports — only the current page gets a fresh capture via the activeTab/icon-click flow. User-facing workflow is documented in README.md.
+### Multi-page (`generateMultiPagePresentation` — guided wizard)
+The old per-page `screenshotCache` reliance is retired. The wizard walks every annotated page live:
+1. `getAnnotatedPages()` yields the pages; a progress modal (`showExportProgress`) lists them.
+2. For each page not already current, `PageNavigator.findNavElement` locates the tab/nav element and clicks it, then `waitForPageSettle` waits for the key + canvas to settle.
+3. `captureVisiblePage()` tries a silent `captureForCache` first; on the first permission failure it falls back to the icon-click modal ONCE. `activeTab`, once granted, survives Power BI's `pushState` page switches, so every later capture in the loop is silent.
+4. Each capture is cropped via `cropScreenshotToCanvas`, assembled into `pageDataList` (`{ pageName, screenshot, comments }`, comments globally numbered), and handed to `generateMultiPagePdf` / `generateMultiPagePptx`.
+5. Pages whose nav element can't be found are marked **failed** in the modal rather than exported blank.
+
+Excel export (`buildExcelData` + SheetJS) needs no screenshots. `cacheCurrentScreenshot` still exists for the single-page nicety but the wizard does not depend on it.
 
 ## Common Tasks
 
