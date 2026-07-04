@@ -345,20 +345,19 @@ function onPageChanged(oldKey, newKey) {
     annotations = [];
   }
 
-  // Calculate global starting number for this page
-  const globalStart = getGlobalStartNumber();
-
-  // Render new page's annotations with global numbering
-  annotations.forEach((annotation, index) => {
-    const box = createAnnotationElement(annotation, globalStart + index + 1);
-    document.body.appendChild(box);
-  });
+  // Power BI may still be re-laying-out the canvas right after nav; render
+  // once now and again after the settle timeout below re-runs reposition.
+  if (migrateLoadedAnnotations()) {
+    pageStore.saveAnnotations(annotations);
+  }
+  renderAnnotationsForCurrentPage();
 
   lastPageKey = newKey;
 
   // Wait for Power BI to update the DOM before getting the page name
   // Power BI updates the page title/navigation after URL change, not instantly
   setTimeout(() => {
+    repositionAllAnnotations();
     renderComments();
     renderPageList();
     // Cache screenshot after annotations are rendered on the new page
@@ -2427,14 +2426,55 @@ function getPageName() {
 // Create annotation element from annotation data
 // [Fix #1] Uses appendChild instead of innerHTML += to preserve SVG namespace
 // [Fix #2] Uses startPoint/endPoint for correct arrow/line direction
+// Resolve an annotation to pixel space for the current layout.
+// v2 annotations rescale to wherever the canvas is now; v1 annotations
+// (or no canvas found) render at their stored absolute position.
+function resolveAnnotationForLayout(annotation) {
+  const Coords = window.PowerBIAnnotatorCoords;
+  const canvas = getReportCanvas();
+  if (canvas && annotation.coordSpace === 'canvas' && annotation.rel) {
+    return Coords.annotationToAbsolute(annotation, Coords.getCanvasPageRect(canvas, window));
+  }
+  return annotation;
+}
+
+function renderAnnotationsForCurrentPage() {
+  document.querySelectorAll('.pbi-annotation-box').forEach((box) => box.remove());
+  const globalStart = getGlobalStartNumber();
+  annotations.forEach((annotation, index) => {
+    const box = createAnnotationElement(annotation, globalStart + index + 1);
+    document.body.appendChild(box);
+  });
+}
+
+// One-time upgrade of v1 (absolute-pixel) annotations. Uses the current
+// canvas rect: correct whenever the layout still matches draw-time, and
+// no worse than the old behavior when it doesn't.
+function migrateLoadedAnnotations() {
+  const Coords = window.PowerBIAnnotatorCoords;
+  const canvas = getReportCanvas();
+  if (!canvas) return false;
+  const rect = Coords.getCanvasPageRect(canvas, window);
+  let changed = false;
+  annotations.forEach((a, i) => {
+    const migrated = Coords.migrateAnnotation(a, rect);
+    if (migrated !== a) {
+      annotations[i] = migrated;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
 function createAnnotationElement(annotation, number) {
+  const resolved = resolveAnnotationForLayout(annotation);
   const box = document.createElement("div");
   box.className = "pbi-annotation-box";
   box.dataset.id = annotation.id;
-  box.style.left = annotation.x + "px";
-  box.style.top = annotation.y + "px";
-  box.style.width = annotation.width + "px";
-  box.style.height = annotation.height + "px";
+  box.style.left = resolved.x + "px";
+  box.style.top = resolved.y + "px";
+  box.style.width = resolved.width + "px";
+  box.style.height = resolved.height + "px";
 
   const toolName = annotation.tool || 'rectangle';
   const color = annotation.color || '#0078d4';
@@ -2443,7 +2483,7 @@ function createAnnotationElement(annotation, number) {
   const Tools = window.PowerBIAnnotatorTools;
   const tool = Tools[toolName];
   if (tool) {
-    const geometry = Tools.geometryFromAnnotation(annotation);
+    const geometry = Tools.geometryFromAnnotation(resolved);
     const svg = tool.render(geometry, color);
     if (svg) box.appendChild(svg);
   }
@@ -2488,14 +2528,10 @@ function loadAnnotations() {
       pageStore.saveAnnotations(annotations);
     }
 
-    // Calculate global starting number for this page
-    const globalStart = getGlobalStartNumber();
-
-    // Render saved annotations on page with global numbering
-    annotations.forEach((annotation, index) => {
-      const box = createAnnotationElement(annotation, globalStart + index + 1);
-      document.body.appendChild(box);
-    });
+    if (migrateLoadedAnnotations()) {
+      pageStore.saveAnnotations(annotations);
+    }
+    renderAnnotationsForCurrentPage();
 
     renderComments();
     renderPageList();
