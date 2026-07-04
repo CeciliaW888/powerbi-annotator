@@ -1559,90 +1559,156 @@ async function generatePresentation(format) {
  * Generate a multi-page presentation/PDF that includes all annotated pages.
  * Uses cached screenshots for other pages and captures a fresh screenshot for the current page.
  */
+function captureSilently() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ action: 'captureForCache' }, (response) => {
+      if (chrome.runtime.lastError || !response || !response.screenshot) {
+        resolve(null);
+        return;
+      }
+      resolve(response.screenshot);
+    });
+  });
+}
+
+// Silent first; icon-click modal once as fallback. After the first grant,
+// silent capture works for the rest of the wizard loop.
+async function captureVisiblePage() {
+  const silent = await captureSilently();
+  if (silent) return silent;
+  chrome.runtime.sendMessage({ action: 'prepareCapture' }, () => { void chrome.runtime.lastError; });
+  const result = await waitForScreenshotOrCancel();
+  return result && result.screenshot ? result.screenshot : null;
+}
+
+function showExportProgress(pageNames) {
+  const overlay = document.createElement('div');
+  overlay.className = 'pbi-modal-overlay';
+  overlay.id = 'pbi-export-progress';
+  overlay.innerHTML = `
+    <div class="pbi-modal">
+      <div class="pbi-modal-header"><h3>Exporting pages</h3></div>
+      <div class="pbi-modal-body">
+        <ul class="pbi-progress-list">
+          ${pageNames.map((n, i) => `<li data-idx="${i}"><span class="pbi-progress-dot"></span>${escapeHtml(n)}</li>`).join('')}
+        </ul>
+      </div>
+      <div class="pbi-modal-actions">
+        <button class="pbi-modal-btn pbi-modal-btn-cancel">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  let cancelled = false;
+  overlay.querySelector('.pbi-modal-btn-cancel').addEventListener('click', () => {
+    cancelled = true;
+    overlay.remove();
+  });
+  return {
+    setStatus(idx, status) { // 'active' | 'done' | 'failed'
+      const li = overlay.querySelector(`li[data-idx="${idx}"]`);
+      if (li) li.className = status;
+    },
+    close() { overlay.remove(); },
+    isCancelled() { return cancelled; },
+  };
+}
+
+function waitForPageSettle(expectedKey, timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    (function poll() {
+      const settled = getPageKey() === expectedKey && getReportCanvas();
+      if (settled) {
+        setTimeout(resolve, 800); // PBI visuals animate in after the container exists
+        return;
+      }
+      if (Date.now() - start > timeoutMs) { resolve(); return; }
+      setTimeout(poll, 250);
+    })();
+  });
+}
+
 async function generateMultiPagePresentation(format) {
   const pages = getAnnotatedPages();
-  const currentKey = getPageKey();
+  if (pages.length === 0) return;
+  const originalKey = getPageKey();
+  const Nav = window.PowerBIAnnotatorPageNavigator;
 
-  // Capture fresh screenshot for current page
   const sidebar = document.getElementById('pbi-annotator-sidebar');
   const toggleBtn = document.getElementById('pbi-toggle-btn');
   const sidebarWasOpen = sidebar.classList.contains('open');
+  sidebar.classList.remove('open');
 
-  sidebar.style.display = 'none';
-  toggleBtn.style.display = 'none';
-
-  document.querySelectorAll('.pbi-annotation-box').forEach(box => {
-    box.style.opacity = '1';
-    box.style.zIndex = '';
-  });
-
-  const reportCanvas = getReportCanvas();
-
-  await new Promise(resolve => setTimeout(resolve, 300));
-
-  // Try to capture current page screenshot
-  let currentScreenshot = null;
-  try {
-    chrome.runtime.sendMessage({ action: 'prepareCapture' }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('Could not prepare capture:', chrome.runtime.lastError.message);
-      }
-    });
-
-    const result = await waitForScreenshotOrCancel();
-    if (result === null) {
-      sidebar.style.display = '';
-      toggleBtn.style.display = '';
-      if (sidebarWasOpen) sidebar.classList.add('open');
-      return;
-    }
-    if (result.screenshot && reportCanvas) {
-      currentScreenshot = await cropScreenshotToCanvas(result.screenshot, reportCanvas);
-    } else if (result.screenshot) {
-      currentScreenshot = result.screenshot;
-    }
-  } catch (error) {
-    console.error('Failed to capture screenshot:', error);
-  }
-
-  // Restore sidebar
-  sidebar.style.display = '';
-  toggleBtn.style.display = '';
-  if (sidebarWasOpen) sidebar.classList.add('open');
-
-  // Update screenshot cache for current page
-  if (currentScreenshot) {
-    screenshotCache[currentKey] = currentScreenshot;
-    chrome.storage.local.set({ screenshotCache });
-  }
-
-  // Build page data array with screenshots and comments
-  console.log('[Export] Screenshot cache keys:', Object.keys(screenshotCache));
-  console.log('[Export] Pages to export:', pages.map(p => ({ key: p.key, name: p.name })));
+  const progress = showExportProgress(pages.map((p) => p.name));
+  const pageDataList = [];
   let globalNumber = 1;
-  const pageDataList = pages.map(page => {
-    const pageAnnotations = allAnnotationsCache[page.key] || [];
-    const hasScreenshot = !!screenshotCache[page.key];
-    console.log('[Export] Page:', page.name, '| key:', page.key, '| hasScreenshot:', hasScreenshot);
-    const comments = pageAnnotations.map(annotation => ({
-      number: globalNumber++,
-      comment: annotation.comment,
-      date: new Date(annotation.timestamp).toLocaleDateString(),
-      tool: annotation.tool || 'rectangle',
-      color: annotation.color || '#0078d4'
-    }));
-    return {
-      pageName: page.name,
-      screenshot: screenshotCache[page.key] || null,
-      comments
-    };
-  });
 
-  if (format === 'ppt') {
-    await generateMultiPagePptx(pageDataList);
-  } else {
-    await generateMultiPagePdf(pageDataList);
+  for (let i = 0; i < pages.length; i++) {
+    if (progress.isCancelled()) break;
+    const page = pages[i];
+    const pageAnnotations = allAnnotationsCache[page.key] || [];
+    const sectionHash = page.key.split('#')[1] || null;
+    progress.setStatus(i, 'active');
+
+    if (page.key !== getPageKey()) {
+      const navEl = Nav.findNavElement(document, {
+        sectionHash,
+        displayName: page.name,
+      });
+      if (!navEl) {
+        progress.setStatus(i, 'failed');
+        continue; // page listed as failed rather than silently blank
+      }
+      navEl.click();
+      await waitForPageSettle(page.key);
+    }
+
+    // Hide our UI, capture, restore
+    sidebar.style.display = 'none';
+    toggleBtn.style.display = 'none';
+    await new Promise((r) => setTimeout(r, 200));
+    const raw = await captureVisiblePage();
+    sidebar.style.display = '';
+    toggleBtn.style.display = '';
+
+    if (!raw) { progress.setStatus(i, 'failed'); continue; }
+    const reportCanvas = getReportCanvas();
+    const screenshot = reportCanvas ? await cropScreenshotToCanvas(raw, reportCanvas) : raw;
+
+    pageDataList.push({
+      pageName: page.name,
+      screenshot,
+      comments: pageAnnotations.map((a) => ({
+        number: globalNumber++,
+        comment: a.comment,
+        date: new Date(a.timestamp).toLocaleDateString(),
+        tool: a.tool || 'rectangle',
+        color: a.color || '#0078d4',
+      })),
+    });
+    progress.setStatus(i, 'done');
   }
+
+  // Return to the page the user started on
+  if (getPageKey() !== originalKey) {
+    const homePage = pages.find((p) => p.key === originalKey);
+    if (homePage) {
+      const backEl = Nav.findNavElement(document, {
+        sectionHash: homePage.key.split('#')[1] || null,
+        displayName: homePage.name,
+      });
+      if (backEl) backEl.click();
+    }
+  }
+
+  progress.close();
+  if (sidebarWasOpen) sidebar.classList.add('open');
+  if (pageDataList.length === 0) {
+    await showModal('No pages could be captured. Click the extension icon when prompted and try again.');
+    return;
+  }
+  if (format === 'ppt') await generateMultiPagePptx(pageDataList);
+  else await generateMultiPagePdf(pageDataList);
 }
 
 /**
