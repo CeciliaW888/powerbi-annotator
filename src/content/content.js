@@ -248,8 +248,35 @@ function init() {
   lastPageKey = getPageKey();
   lastReportId = getReportId();
   startNavigationWatcher();
+  watchCanvasLayout();
   injectPowerBIPageScript();
   console.log("Power BI Annotator initialized");
+}
+
+let canvasResizeObserver = null;
+let repositionQueued = false;
+
+function repositionAllAnnotations() {
+  // rAF-coalesced: ResizeObserver can fire in bursts during PBI's own layout
+  if (repositionQueued) return;
+  repositionQueued = true;
+  requestAnimationFrame(() => {
+    repositionQueued = false;
+    renderAnnotationsForCurrentPage();
+  });
+}
+
+function watchCanvasLayout() {
+  const canvas = getReportCanvas();
+  if (!canvas) {
+    // PBI renders the canvas late; retry until it exists
+    setTimeout(watchCanvasLayout, 1000);
+    return;
+  }
+  if (canvasResizeObserver) canvasResizeObserver.disconnect();
+  canvasResizeObserver = new ResizeObserver(repositionAllAnnotations);
+  canvasResizeObserver.observe(canvas);
+  window.addEventListener('resize', repositionAllAnnotations);
 }
 
 // Poll for URL changes to detect SPA navigation (Power BI changes URL without page reload)
@@ -360,6 +387,8 @@ function onPageChanged(oldKey, newKey) {
     repositionAllAnnotations();
     renderComments();
     renderPageList();
+    // The canvas element can be replaced by PBI on page switch; re-observe the fresh node.
+    watchCanvasLayout();
     // Cache screenshot after annotations are rendered on the new page
     if (annotations.length > 0) {
       setTimeout(() => cacheCurrentScreenshot(newKey), 600);
