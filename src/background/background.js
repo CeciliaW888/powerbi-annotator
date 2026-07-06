@@ -62,7 +62,12 @@ chrome.action.onClicked.addListener((tab) => {
   });
 });
 
-// Hide the instruction modal, wait for DOM update, then capture screenshot
+// Hide the instruction modal, wait for Power BI to finish rendering, then capture.
+// The delay must cover PBI's visual re-render after the modal/sidebar are hidden;
+// 200ms was too short and captured a half-rendered first page (visuals still
+// animating in), so the screenshot missed content.
+const CAPTURE_SETTLE_MS = 1500;
+
 function captureAndSend(tab) {
   chrome.tabs.sendMessage(tab.id, { action: 'hideForCapture' }, () => {
     setTimeout(() => {
@@ -82,7 +87,7 @@ function captureAndSend(tab) {
         }
         clearPendingCapture();
       });
-    }, 200);
+    }, CAPTURE_SETTLE_MS);
   });
 }
 

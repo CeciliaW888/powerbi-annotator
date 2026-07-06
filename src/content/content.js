@@ -2740,7 +2740,7 @@ function getPageKey() {
 // nav links aren't anchor tags or hrefs aren't available.
 function getActiveAppNavPageName() {
   // Strategy A: URL hash → nav link text match
-  const sectionMatch = window.location.pathname.match(/\/(ReportSection[a-zA-Z0-9]+)/);
+  const sectionMatch = window.location.pathname.match(/\/(ReportSection[a-zA-Z0-9]*)/);
   if (sectionMatch) {
     const sectionId = sectionMatch[1];
     // Find all anchor tags whose href contains this ReportSection ID

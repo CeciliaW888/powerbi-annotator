@@ -6,7 +6,12 @@ function deriveKeyFromLocation(loc) {
     reportId = params.get('reportId') || null;
   }
 
-  const sectionFromPath = loc.pathname.match(/\/(ReportSection[a-zA-Z0-9]+)/);
+  // Note the trailing `*` not `+`: Power BI's default FIRST page is named
+  // exactly "ReportSection" (no suffix); later pages are "ReportSection1",
+  // "ReportSectionAbc123", etc. Requiring a suffix left page 1 without a
+  // stable key, so it fell back to pathname+search (which PBI mutates via
+  // query params), making page-1 annotations vanish on return.
+  const sectionFromPath = loc.pathname.match(/\/(ReportSection[a-zA-Z0-9]*)/);
   let sectionHash = sectionFromPath ? sectionFromPath[1] : null;
   if (!sectionHash) {
     const params = new URLSearchParams(loc.search);
