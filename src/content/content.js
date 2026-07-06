@@ -16,6 +16,16 @@ let lastReportId = null; // Track current report ID to detect report switches
 let screenshotCache = {}; // { pageKey: dataUrl } - cached screenshots per page
 let pageNameCache = {}; // { pageKey: displayName } - page names from Power BI embed API
 
+// Live active-page identity from the Power BI embed API (page-world script).
+// This is the ONLY reliable page identity in App view, where PBI keeps the URL
+// static across pages — so URL parsing can't tell app pages apart. `name` is the
+// stable section id (e.g. "ReportSection2"), `displayName` is human-readable.
+let currentEmbedPage = { name: null, displayName: null };
+
+function isAppView() {
+  return window.location.pathname.includes('/apps/');
+}
+
 // PageStore owns page identity, annotation persistence, and SPA navigation events.
 // Constructed at init() time with concrete adapters; see CONTEXT.md for the seam.
 let pageStore = null;
@@ -228,16 +238,26 @@ window.addEventListener('message', function(event) {
   if (!event.data || !event.data.type) return;
 
   if (event.data.type === '__pbi_annotator_page_info__') {
-    const { displayName, url } = event.data;
+    const { displayName, name, url } = event.data;
     if (displayName && url) {
       pageNameCache[url] = displayName;
       chrome.storage.local.set({ pageNameCache });
+      currentEmbedPage = { name: name || null, displayName };
+      // In App view the URL doesn't change between pages, so getPageKey() only
+      // changes once this embed identity updates — poke the navigation watcher.
+      const currentKey = getPageKey();
+      if (currentKey !== lastPageKey) {
+        onPageChanged(lastPageKey, currentKey);
+      }
       renderPageList();
     }
   }
 
   // Handle navigation change from page-world pushState/replaceState override
   if (event.data.type === '__pbi_annotator_navigation__') {
+    // Ask the embed API for the fresh active page — in App view this is the
+    // only signal that the page changed (the URL may be static).
+    requestEmbedPageInfo();
     const currentKey = getPageKey();
     if (currentKey !== lastPageKey) {
       onPageChanged(lastPageKey, currentKey);
@@ -245,11 +265,24 @@ window.addEventListener('message', function(event) {
   }
 });
 
+// Ask the page-world script to re-read the Power BI embed API's active page.
+function requestEmbedPageInfo() {
+  window.postMessage({ type: '__pbi_annotator_request_page_info__' }, '*');
+}
+
 // Initialize the extension
 function init() {
   pageStore = window.PowerBIAnnotatorPageStore.createPageStore({
     storage: chrome.storage.local,
-    locationProvider: () => ({ pathname: window.location.pathname, search: window.location.search }),
+    locationProvider: () => {
+      let pathname = window.location.pathname;
+      // App view keeps the URL static across pages; splice in the embed API's
+      // stable section id so each app page derives a distinct, stable key.
+      if (isAppView() && currentEmbedPage.name && !/\/ReportSection/.test(pathname)) {
+        pathname = pathname.replace(/\/?$/, '/') + currentEmbedPage.name;
+      }
+      return { pathname, search: window.location.search };
+    },
     displayNameResolver: () => getPageName(),
     pageOrderResolver: () => getReportPageOrder(),
   });
@@ -2460,7 +2493,10 @@ function getPageName() {
   // This must come first — app nav is structurally different from workspace
   // report bottom tabs, and the broad selectors below can return the wrong
   // element (e.g. the report group header instead of the active page).
-  if (window.location.pathname.includes('/apps/')) {
+  if (isAppView()) {
+    // The embed API's displayName is the most reliable app-page name; the DOM
+    // nav tree is a fallback for when the embed API hasn't responded yet.
+    if (currentEmbedPage.displayName) return currentEmbedPage.displayName;
     const appPageName = getActiveAppNavPageName();
     if (appPageName) return appPageName;
   }

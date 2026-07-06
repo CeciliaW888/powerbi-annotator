@@ -1,10 +1,17 @@
 (function () {
   const TAB_SELECTORS = [
+    // Workspace report: bottom page tabs
     '.pagesNavigation button[role="tab"]',
     '.pagesNav button[role="tab"]',
     '[aria-label="Page navigation"] button[role="tab"]',
     'button[role="tab"]',
     '[class*="pageNavigator"] button',
+    // App view: left-nav tree items / links (no bottom tabs)
+    '[role="treeitem"]',
+    '[role="tree"] a',
+    'nav a',
+    '[class*="navItem"]',
+    'li[class*="page"] a',
   ];
 
   function cleanLabel(el) {

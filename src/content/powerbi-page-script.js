@@ -80,12 +80,14 @@
     getActivePageInfo(true);
   });
 
-  // Poll until the API is found, then stop.
-  // The content script sends on-demand requests on page navigation, so continuous
-  // polling is not needed once the API is available.
+  // Poll for the active page. Before the API is available, give up after
+  // maxRetries. Once available, KEEP polling: in App view PBI switches pages
+  // without changing the URL, so this heartbeat is the only way to notice a
+  // page change. getActivePageInfo only posts a message when name/url changes,
+  // so the steady-state cost is a cheap getActivePage() call per tick.
   var pollInterval = setInterval(function() {
     var found = getActivePageInfo(false);
-    if (found || retryCount >= maxRetries) {
+    if (!found && retryCount >= maxRetries) {
       clearInterval(pollInterval);
     }
   }, 1000);
